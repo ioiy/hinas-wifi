@@ -5,7 +5,7 @@
 # 项目地址: https://github.com/ioiy/hinas-wifi
 # ==========================================
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 # 远程脚本地址 (已添加国内加速代理，用于一键更新)
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 # 守护进程脚本路径
@@ -22,9 +22,9 @@ NC='\033[0m' # No Color
 SCRIPT_PATH=$(readlink -f "$0")
 
 # --- 自动配置全局快捷命令 ---
-# 只要运行过一次本脚本，以后就可以在任意目录直接输入 wifi 命令唤出面板
-if [ ! -x "/usr/local/bin/wifi" ] || [ "$(readlink -f /usr/local/bin/wifi)" != "$SCRIPT_PATH" ]; then
-    ln -sf "$SCRIPT_PATH" /usr/local/bin/wifi
+# 解决 bash 缓存旧路径的问题，直接覆盖回 /usr/bin/wifi
+if [ ! -x "/usr/bin/wifi" ] || [ "$(readlink -f /usr/bin/wifi)" != "$SCRIPT_PATH" ]; then
+    ln -sf "$SCRIPT_PATH" /usr/bin/wifi
     chmod +x "$SCRIPT_PATH"
 fi
 
@@ -41,8 +41,7 @@ update_script() {
     echo -e "${CYAN}======================================${NC}"
     echo -e "${CYAN}         在线检测与更新控制面板       ${NC}"
     echo -e "${CYAN}======================================${NC}"
-    echo -e "${YELLOW}当前版本: v${VERSION}${NC}"
-    echo -e "${YELLOW}正在检测外网连接...${NC}"
+    echo -e "${YELLOW}正在检测外网连接与云端版本...${NC}"
     
     if ! check_network; then
         echo -e "${RED}❌ 无网络连接，无法获取更新！请先连接 WiFi 或网线。${NC}"
@@ -50,7 +49,34 @@ update_script() {
         return
     fi
 
-    echo -e "${GREEN}✅ 网络连接正常。正在从 ioiy/hinas-wifi 获取最新版本...${NC}"
+    # 抓取云端最新版本号
+    CLOUD_VERSION=$(wget -qO- "$UPDATE_URL" | grep -E '^VERSION=' | head -n 1 | cut -d'"' -f2)
+    
+    if [ -z "$CLOUD_VERSION" ]; then
+        echo -e "${RED}❌ 获取云端版本失败，请检查 GitHub 仓库地址或网络。${NC}"
+        sleep 3
+        return
+    fi
+
+    echo -e "当前本地版本: ${CYAN}v${VERSION}${NC}"
+    echo -e "发现云端版本: ${GREEN}v${CLOUD_VERSION}${NC}"
+    echo "--------------------------------------"
+    
+    if [ "$VERSION" == "$CLOUD_VERSION" ]; then
+        echo -e "${GREEN}✅ 当前已是最新版本，无需更新！${NC}"
+        read -n 1 -s -r -p "按任意键返回主菜单..."
+        return
+    fi
+
+    # 二次确认
+    read -p "是否确认更新到 v${CLOUD_VERSION}？(y/n): " confirm
+    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+        echo -e "${YELLOW}已取消更新。${NC}"
+        sleep 1
+        return
+    fi
+
+    echo -e "${GREEN}正在从 ioiy/hinas-wifi 下载最新代码...${NC}"
     # 下载到临时文件，防止下载中断导致脚本损坏
     if wget -q -O /tmp/hinaswifi.sh.tmp "$UPDATE_URL"; then
         # 将新代码覆盖当前正在运行的文件
