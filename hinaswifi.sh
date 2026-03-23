@@ -5,7 +5,7 @@
 # 项目地址: https://github.com/ioiy/hinas-wifi
 # ==========================================
 
-VERSION="1.5.0"
+VERSION="1.6.1"
 # 远程脚本地址 (已添加国内加速代理，用于一键更新)
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 # 守护进程脚本路径
@@ -222,11 +222,11 @@ show_network_info() {
     read -n 1 -s -r -p "按任意键返回主菜单..."
 }
 
-# --- 功能: 配置静态 IP ---
-set_static_ip() {
+# --- 功能: 配置静态/动态 IP ---
+config_ip_mode() {
     clear
     echo -e "${CYAN}======================================${NC}"
-    echo -e "${CYAN}         配置静态 IP 地址             ${NC}"
+    echo -e "${CYAN}        配置静态 / 动态 IP 地址       ${NC}"
     echo -e "${CYAN}======================================${NC}"
     
     if ! command -v nmcli >/dev/null 2>&1; then
@@ -234,49 +234,84 @@ set_static_ip() {
         sleep 2; return
     fi
 
-    # 获取当前已连接的 WiFi 配置名称
-    CONN_NAME=$(nmcli -t -f NAME,TYPE,ACTIVE connection | awk -F: '$2=="802-11-wireless" && $3=="yes" {print $1}' | head -n 1)
+    # 动态获取主要的物理无线网卡接口
+    WIFI_IF=$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="wifi" {print $1}' | grep -v 'p2p' | head -n 1)
+    [ -z "$WIFI_IF" ] && WIFI_IF="wlan0"
+
+    # 精准获取当前正在该网卡上活动的连接配置名称 (解决部分系统类型不匹配问题)
+    CONN_NAME=$(nmcli -t -f DEVICE,CONNECTION device status | grep "^$WIFI_IF:" | cut -d: -f2)
     
-    if [ -z "$CONN_NAME" ]; then
-        echo -e "${RED}❌ 当前未连接任何 WiFi。请先在菜单中连接 WiFi 后再配置静态 IP。${NC}"
+    if [ -z "$CONN_NAME" ] || [ "$CONN_NAME" == "--" ]; then
+        echo -e "${RED}❌ 当前未连接任何 WiFi。请先在菜单中连接 WiFi 后再配置 IP。${NC}"
         read -n 1 -s -r -p "按任意键返回..."
         return
     fi
     
     echo -e "当前活动 WiFi: ${GREEN}$CONN_NAME${NC}"
-    echo -e "${YELLOW}警告: 若设置错误可能导致 NAS 断网失联！${NC}"
     echo "--------------------------------------"
+    echo "1. 配置静态 IP (固定局域网 IP 防变更)"
+    echo "2. 恢复动态 IP (恢复 DHCP 自动获取)"
+    echo "0. 返回主菜单"
+    echo "--------------------------------------"
+    read -p "请输入选项: " ip_choice
     
-    read -p "请输入静态 IP (如 192.168.1.100, 直接回车取消): " static_ip
-    [ -z "$static_ip" ] && { echo "已取消设置。"; sleep 1; return; }
-    
-    read -p "请输入子网掩码前缀 (通常为 24，代表 255.255.255.0，直接回车默认24): " prefix
-    [ -z "$prefix" ] && prefix=24
-    
-    read -p "请输入默认网关 (如路由器 IP 192.168.1.1): " gateway
-    [ -z "$gateway" ] && { echo "已取消设置。"; sleep 1; return; }
-    
-    read -p "请输入 DNS (直接回车默认使用 223.5.5.5): " dns
-    [ -z "$dns" ] && dns="223.5.5.5"
-    
-    echo -e "${YELLOW}正在将 $CONN_NAME 配置为静态 IP...${NC}"
-    
-    # 写入静态配置
-    nmcli con mod "$CONN_NAME" ipv4.addresses "$static_ip/$prefix" ipv4.gateway "$gateway" ipv4.dns "$dns" ipv4.method manual
-    
-    # 重启连接以生效
-    nmcli con down "$CONN_NAME" >/dev/null 2>&1
-    nmcli con up "$CONN_NAME" >/dev/null 2>&1
-    
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✅ 静态 IP [$static_ip] 设置成功！网络已重新连接。${NC}"
-    else
-        echo -e "${RED}❌ 设置失败，请检查网段参数是否与路由器匹配。${NC}"
-        # 尝试回滚到 DHCP
-        nmcli con mod "$CONN_NAME" ipv4.method auto
-        nmcli con up "$CONN_NAME" >/dev/null 2>&1
-    fi
-    read -n 1 -s -r -p "按任意键返回..."
+    case $ip_choice in
+        1)
+            echo -e "${YELLOW}警告: 若设置错误可能导致 NAS 断网失联！${NC}"
+            read -p "请输入静态 IP (如 192.168.1.100, 直接回车取消): " static_ip
+            [ -z "$static_ip" ] && { echo "已取消设置。"; sleep 1; return; }
+            
+            read -p "请输入子网掩码前缀 (通常为 24，代表 255.255.255.0，直接回车默认24): " prefix
+            [ -z "$prefix" ] && prefix=24
+            
+            read -p "请输入默认网关 (如路由器 IP 192.168.1.1): " gateway
+            [ -z "$gateway" ] && { echo "已取消设置。"; sleep 1; return; }
+            
+            read -p "请输入 DNS (直接回车默认使用 223.5.5.5): " dns
+            [ -z "$dns" ] && dns="223.5.5.5"
+            
+            echo -e "${YELLOW}正在将 $CONN_NAME 配置为静态 IP...${NC}"
+            
+            # 写入静态配置
+            nmcli con mod "$CONN_NAME" ipv4.addresses "$static_ip/$prefix" ipv4.gateway "$gateway" ipv4.dns "$dns" ipv4.method manual
+            
+            # 重启连接以生效
+            nmcli con down "$CONN_NAME" >/dev/null 2>&1
+            nmcli con up "$CONN_NAME" >/dev/null 2>&1
+            
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}✅ 静态 IP [$static_ip] 设置成功！网络已重新连接。${NC}"
+            else
+                echo -e "${RED}❌ 设置失败，请检查网段参数是否与路由器匹配。${NC}"
+                # 尝试回滚到 DHCP
+                nmcli con mod "$CONN_NAME" ipv4.method auto
+                nmcli con up "$CONN_NAME" >/dev/null 2>&1
+            fi
+            read -n 1 -s -r -p "按任意键返回..."
+            ;;
+        2)
+            echo -e "${YELLOW}正在将 $CONN_NAME 恢复为 DHCP 自动获取 IP...${NC}"
+            
+            # 清理之前的静态配置信息，并设置为自动获取
+            nmcli con mod "$CONN_NAME" ipv4.addresses "" ipv4.gateway "" ipv4.dns "" ipv4.method auto
+            
+            # 重启连接以生效
+            nmcli con down "$CONN_NAME" >/dev/null 2>&1
+            nmcli con up "$CONN_NAME" >/dev/null 2>&1
+            
+            if [ $? -eq 0 ]; then
+                # 获取系统重新分配的 IP
+                WIFI_IF=$(nmcli -t -f DEVICE,NAME connection show --active | awk -F: '$2=="'"$CONN_NAME"'" {print $1}')
+                NEW_IP=$(ip -4 addr show dev "$WIFI_IF" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
+                echo -e "${GREEN}✅ 已成功恢复为动态 IP！当前自动获取的新 IP 为: ${NEW_IP}${NC}"
+            else
+                echo -e "${RED}❌ 恢复 DHCP 失败，请检查网络环境。${NC}"
+            fi
+            read -n 1 -s -r -p "按任意键返回..."
+            ;;
+        0) return ;;
+        *) echo -e "${RED}输入无效。${NC}"; sleep 1 ;;
+    esac
 }
 
 # --- 功能: 开启/关闭 WiFi 热点 (AP模式) ---
@@ -337,14 +372,49 @@ toggle_hotspot() {
 
 # --- 功能: 安装WiFi驱动 ---
 install_driver() {
-    echo -e "${YELLOW}准备安装 WiFi 驱动...${NC}"
-    # 如果同目录下有 wifi_install.sh 则执行它，否则去远程仓库下载执行
-    if [ -f "$(dirname "$SCRIPT_PATH")/wifi_install.sh" ]; then
-        bash "$(dirname "$SCRIPT_PATH")/wifi_install.sh"
+    clear
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${CYAN}           安装 WiFi 驱动             ${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    echo "请选择要安装的驱动型号 (由本仓库提供):"
+    echo "1. RTL8188ETV (多见于水星/迅捷等老款无线网卡)"
+    echo "2. RTL8188FTV (多见于杂牌免驱版/微型无线网卡)"
+    echo "0. 返回主菜单"
+    echo "--------------------------------------"
+    read -p "请输入选项: " drv_choice
+
+    DRV_FILE=""
+    case $drv_choice in
+        1) DRV_FILE="rtl8188etv-0808.tar.gz" ;;
+        2) DRV_FILE="rtl8188ftv-0808.tar.gz" ;;
+        0) return ;;
+        *) echo -e "${RED}无效选项。${NC}"; sleep 1; return ;;
+    esac
+
+    echo -e "${YELLOW}正在拉取驱动包和安装脚本...${NC}"
+    
+    # 创建临时工作目录
+    mkdir -p /tmp/wifi_driver && cd /tmp/wifi_driver
+    
+    # 自动下载仓库中对应的驱动压缩包
+    wget -q --show-progress -O "$DRV_FILE" "https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/$DRV_FILE"
+    
+    # 自动下载执行逻辑脚本
+    wget -q -O wifi_install.sh "https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/wifi_install.sh"
+
+    if [ -f "$DRV_FILE" ] && [ -f "wifi_install.sh" ]; then
+        echo -e "${GREEN}下载完成，开始向系统注入驱动...${NC}"
+        # 喂入 -f 参数执行真正安装，解决光弹帮助文档的问题
+        bash wifi_install.sh -f "$DRV_FILE"
+        echo -e "${GREEN}安装流程结束！如果未报错，您可以插入网卡尝试连接了。${NC}"
     else
-        echo "未在本地找到 wifi_install.sh，正在从你的 GitHub 下载安装逻辑..."
-        wget -qO- "https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/wifi_install.sh" | bash
+        echo -e "${RED}❌ 驱动文件下载失败，请检查网络是否畅通。${NC}"
     fi
+    
+    # 清理现场
+    cd /root
+    rm -rf /tmp/wifi_driver
+    
     echo "按任意键返回..."
     read -n 1
 }
@@ -424,7 +494,7 @@ while true; do
     echo "  2. 扫描并连接 WIFI 网络"
     echo "  3. 开启/修改防掉线自动重连 (无人值守必备)"
     echo "  4. 查看详细网络信息 (IP/MAC/网关/公网IP等)"
-    echo "  5. 配置静态 IP 地址 (固定IP防变更)"
+    echo "  5. 配置静态/动态 IP (固定IP或恢复DHCP)"
     echo "  6. 开启 WiFi 热点 (将 NAS 作为路由器使用)"
     echo -e "  7. ${GREEN}在线更新控制面板${NC} (当前版本 v${VERSION})"
     echo "  0. 退出面板"
@@ -438,7 +508,7 @@ while true; do
         2) connect_wifi ;;
         3) toggle_watchdog ;;
         4) show_network_info ;;
-        5) set_static_ip ;;
+        5) config_ip_mode ;;
         6) toggle_hotspot ;;
         7) update_script ;;
         0) clear; echo "已退出 WiFi 控制面板。"; exit 0 ;;
