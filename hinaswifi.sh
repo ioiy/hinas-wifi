@@ -5,7 +5,7 @@
 # 项目地址: https://github.com/ioiy/hinas-wifi
 # ==========================================
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 # 远程脚本地址 (已添加国内加速代理，用于一键更新)
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 # 守护进程脚本路径
@@ -180,6 +180,161 @@ EOF
     esac
 }
 
+# --- 功能: 查看详细网络信息 ---
+show_network_info() {
+    clear
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${CYAN}          查看详细网络信息            ${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    
+    WIFI_IF=$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="wifi" {print $1}' | grep -v 'p2p' | head -n 1)
+    [ -z "$WIFI_IF" ] && WIFI_IF="wlan0"
+
+    echo -e "${YELLOW}正在获取系统网络信息，请稍候...${NC}"
+    
+    # 获取 MAC 地址
+    MAC_ADDR=$(ip link show "$WIFI_IF" | awk '/ether/ {print $2}')
+    [ -z "$MAC_ADDR" ] && MAC_ADDR="未知"
+    
+    # 获取局域网 IP
+    LAN_IP=$(ip -4 addr show dev "$WIFI_IF" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
+    [ -z "$LAN_IP" ] && LAN_IP="未分配/未连接"
+    
+    # 获取默认网关
+    GATEWAY=$(ip route | awk '/default/ {print $3}' | head -n 1)
+    [ -z "$GATEWAY" ] && GATEWAY="未知/未配置"
+    
+    # 获取 DNS
+    DNS=$(grep -m 1 nameserver /etc/resolv.conf | awk '{print $2}')
+    [ -z "$DNS" ] && DNS="未知"
+    
+    # 获取公网 IP (设置 3 秒超时防卡死)
+    PUBLIC_IP=$(curl -s --connect-timeout 3 ifconfig.me || echo "获取失败/无外网")
+
+    echo "--------------------------------------"
+    echo -e "接口名称: ${GREEN}$WIFI_IF${NC}"
+    echo -e "物理 MAC: ${GREEN}$MAC_ADDR${NC}"
+    echo -e "局域网IP: ${GREEN}$LAN_IP${NC}"
+    echo -e "默认网关: ${GREEN}$GATEWAY${NC}"
+    echo -e "当前 DNS: ${GREEN}$DNS${NC}"
+    echo -e "公网 IP : ${GREEN}$PUBLIC_IP${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    read -n 1 -s -r -p "按任意键返回主菜单..."
+}
+
+# --- 功能: 配置静态 IP ---
+set_static_ip() {
+    clear
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${CYAN}         配置静态 IP 地址             ${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    
+    if ! command -v nmcli >/dev/null 2>&1; then
+        echo -e "${RED}未检测到 nmcli，该功能不可用。${NC}"
+        sleep 2; return
+    fi
+
+    # 获取当前已连接的 WiFi 配置名称
+    CONN_NAME=$(nmcli -t -f NAME,TYPE,ACTIVE connection | awk -F: '$2=="802-11-wireless" && $3=="yes" {print $1}' | head -n 1)
+    
+    if [ -z "$CONN_NAME" ]; then
+        echo -e "${RED}❌ 当前未连接任何 WiFi。请先在菜单中连接 WiFi 后再配置静态 IP。${NC}"
+        read -n 1 -s -r -p "按任意键返回..."
+        return
+    fi
+    
+    echo -e "当前活动 WiFi: ${GREEN}$CONN_NAME${NC}"
+    echo -e "${YELLOW}警告: 若设置错误可能导致 NAS 断网失联！${NC}"
+    echo "--------------------------------------"
+    
+    read -p "请输入静态 IP (如 192.168.1.100, 直接回车取消): " static_ip
+    [ -z "$static_ip" ] && { echo "已取消设置。"; sleep 1; return; }
+    
+    read -p "请输入子网掩码前缀 (通常为 24，代表 255.255.255.0，直接回车默认24): " prefix
+    [ -z "$prefix" ] && prefix=24
+    
+    read -p "请输入默认网关 (如路由器 IP 192.168.1.1): " gateway
+    [ -z "$gateway" ] && { echo "已取消设置。"; sleep 1; return; }
+    
+    read -p "请输入 DNS (直接回车默认使用 223.5.5.5): " dns
+    [ -z "$dns" ] && dns="223.5.5.5"
+    
+    echo -e "${YELLOW}正在将 $CONN_NAME 配置为静态 IP...${NC}"
+    
+    # 写入静态配置
+    nmcli con mod "$CONN_NAME" ipv4.addresses "$static_ip/$prefix" ipv4.gateway "$gateway" ipv4.dns "$dns" ipv4.method manual
+    
+    # 重启连接以生效
+    nmcli con down "$CONN_NAME" >/dev/null 2>&1
+    nmcli con up "$CONN_NAME" >/dev/null 2>&1
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✅ 静态 IP [$static_ip] 设置成功！网络已重新连接。${NC}"
+    else
+        echo -e "${RED}❌ 设置失败，请检查网段参数是否与路由器匹配。${NC}"
+        # 尝试回滚到 DHCP
+        nmcli con mod "$CONN_NAME" ipv4.method auto
+        nmcli con up "$CONN_NAME" >/dev/null 2>&1
+    fi
+    read -n 1 -s -r -p "按任意键返回..."
+}
+
+# --- 功能: 开启/关闭 WiFi 热点 (AP模式) ---
+toggle_hotspot() {
+    clear
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${CYAN}         WiFi 热点 (AP 模式)          ${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    
+    WIFI_IF=$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="wifi" {print $1}' | grep -v 'p2p' | head -n 1)
+    [ -z "$WIFI_IF" ] && WIFI_IF="wlan0"
+
+    echo "1. 开启 WiFi 热点 (将 NAS 作为路由器)"
+    echo "2. 关闭 WiFi 热点 (恢复普通联网模式)"
+    echo "0. 返回主菜单"
+    echo "--------------------------------------"
+    read -p "请输入选项: " hs_choice
+    
+    case $hs_choice in
+        1)
+            read -p "请输入想要设置的热点名称 (SSID): " hs_ssid
+            [ -z "$hs_ssid" ] && return
+            
+            read -p "请输入热点密码 (最少 8 位): " hs_pwd
+            if [ ${#hs_pwd} -lt 8 ]; then
+                echo -e "${RED}密码长度不能小于 8 位！${NC}"
+                sleep 2; return
+            fi
+            
+            echo -e "${YELLOW}正在配置并启动热点 (如果已连接WiFi将会断开)...${NC}"
+            nmcli device wifi hotspot ifname "$WIFI_IF" ssid "$hs_ssid" password "$hs_pwd"
+            
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}✅ WiFi 热点已成功开启！您的手机现在可以搜索并连接了。${NC}"
+                echo -e "热点名称: ${GREEN}$hs_ssid${NC}"
+                echo -e "热点密码: ${GREEN}$hs_pwd${NC}"
+            else
+                echo -e "${RED}❌ 热点开启失败！可能是由于您的无线网卡不支持 AP 模式。${NC}"
+            fi
+            read -n 1 -s -r -p "按任意键返回..."
+            ;;
+        2)
+            echo -e "${YELLOW}正在尝试关闭热点...${NC}"
+            # 查找类型为 wifi 且被标记为 hotspot 的活动连接，并断开它
+            HOTSPOT_CONN=$(nmcli -t -f NAME,TYPE,ACTIVE connection | awk -F: '$3=="yes" && $2=="802-11-wireless" {print $1}' | head -n 1)
+            if [ -n "$HOTSPOT_CONN" ]; then
+                nmcli con down "$HOTSPOT_CONN" >/dev/null 2>&1
+                echo -e "${GREEN}✅ 热点已关闭。您可以回到菜单 2 重新连接外部 WiFi。${NC}"
+            else
+                echo -e "${YELLOW}未检测到正在运行的热点。${NC}"
+            fi
+            read -n 1 -s -r -p "按任意键返回..."
+            ;;
+        0) return ;;
+        *) echo -e "${RED}输入无效。${NC}"; sleep 1 ;;
+    esac
+}
+
 # --- 功能: 安装WiFi驱动 ---
 install_driver() {
     echo -e "${YELLOW}准备安装 WiFi 驱动...${NC}"
@@ -268,19 +423,25 @@ while true; do
     echo "  1. 一键安装 WIFI 驱动 (RTL8188等)"
     echo "  2. 扫描并连接 WIFI 网络"
     echo "  3. 开启/修改防掉线自动重连 (无人值守必备)"
-    echo -e "  4. ${GREEN}在线更新控制面板${NC} (当前版本 v${VERSION})"
+    echo "  4. 查看详细网络信息 (IP/MAC/网关/公网IP等)"
+    echo "  5. 配置静态 IP 地址 (固定IP防变更)"
+    echo "  6. 开启 WiFi 热点 (将 NAS 作为路由器使用)"
+    echo -e "  7. ${GREEN}在线更新控制面板${NC} (当前版本 v${VERSION})"
     echo "  0. 退出面板"
     echo -e "${CYAN}-------------------------------------------------${NC}"
     echo -e "  💡 提示: 在终端任意位置输入 ${GREEN}wifi${NC} 即可快速打开本面板"
     echo -e "${CYAN}=================================================${NC}"
-    read -p "请输入选项数字 [0-4]: " choice
+    read -p "请输入选项数字 [0-7]: " choice
 
     case $choice in
         1) install_driver ;;
         2) connect_wifi ;;
         3) toggle_watchdog ;;
-        4) update_script ;;
+        4) show_network_info ;;
+        5) set_static_ip ;;
+        6) toggle_hotspot ;;
+        7) update_script ;;
         0) clear; echo "已退出 WiFi 控制面板。"; exit 0 ;;
-        *) echo -e "${RED}输入无效，请重新输入 0-4 之间的数字。${NC}"; sleep 1 ;;
+        *) echo -e "${RED}输入无效，请重新输入 0-7 之间的数字。${NC}"; sleep 1 ;;
     esac
 done
