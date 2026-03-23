@@ -5,7 +5,7 @@
 # 项目地址: https://github.com/ioiy/hinas-wifi
 # ==========================================
 
-VERSION="1.8.0"
+VERSION="1.8.1"
 # 远程脚本地址 (已添加国内加速代理，用于一键更新)
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 # 守护进程脚本路径
@@ -354,12 +354,30 @@ run_speedtest() {
         echo -e "${GREEN}检测到 Python3 环境，正在拉取 Speedtest-cli 工具测速...${NC}"
         echo -e "${YELLOW}(测速过程约需 30秒-1分钟，请耐心等待测速节点匹配)${NC}"
         echo "--------------------------------------"
-        wget -qO- https://ghfast.top/https://raw.githubusercontent.com/sivel/speedtest-cli/master/speedtest.py | python3 -
+        wget -qO- https://ghfast.top/https://raw.githubusercontent.com/sivel/speedtest-cli/master/speedtest.py | python3 -u - | sed -u \
+            -e 's/Retrieving speedtest.net configuration.../正在获取测速配置.../' \
+            -e 's/Testing from/当前客户端:/' \
+            -e 's/Retrieving speedtest.net server list.../正在获取服务器列表.../' \
+            -e 's/Selecting best server based on ping.../正在评估寻找最佳测速节点.../' \
+            -e 's/Hosted by/目标节点:/' \
+            -e 's/Testing download speed/正在测试下载速度/' \
+            -e 's/Download:/下载速度:/' \
+            -e 's/Testing upload speed/正在测试上传速度/' \
+            -e 's/Upload:/上传速度:/'
     elif command -v python >/dev/null 2>&1; then
         echo -e "${GREEN}检测到 Python 环境，正在拉取 Speedtest-cli 工具测速...${NC}"
         echo -e "${YELLOW}(测速过程约需 30秒-1分钟，请耐心等待测速节点匹配)${NC}"
         echo "--------------------------------------"
-        wget -qO- https://ghfast.top/https://raw.githubusercontent.com/sivel/speedtest-cli/master/speedtest.py | python -
+        wget -qO- https://ghfast.top/https://raw.githubusercontent.com/sivel/speedtest-cli/master/speedtest.py | python -u - | sed -u \
+            -e 's/Retrieving speedtest.net configuration.../正在获取测速配置.../' \
+            -e 's/Testing from/当前客户端:/' \
+            -e 's/Retrieving speedtest.net server list.../正在获取服务器列表.../' \
+            -e 's/Selecting best server based on ping.../正在评估寻找最佳测速节点.../' \
+            -e 's/Hosted by/目标节点:/' \
+            -e 's/Testing download speed/正在测试下载速度/' \
+            -e 's/Download:/下载速度:/' \
+            -e 's/Testing upload speed/正在测试上传速度/' \
+            -e 's/Upload:/上传速度:/'
     else
         echo -e "${RED}未检测到 Python 环境，已降级为基础模式测速。${NC}"
         echo -e "将使用 wget 工具从全球可用节点盲测下载速度...\n"
