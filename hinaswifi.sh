@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # ==========================================
-# HiNAS WiFi 控制面板 (定制升级版)
+# HiNAS WiFi 控制面板 (终极进化版)
 # 项目地址: https://github.com/ioiy/hinas-wifi
 # ==========================================
 
-VERSION="1.7.0"
+VERSION="1.8.0"
 # 远程脚本地址 (已添加国内加速代理，用于一键更新)
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 # 守护进程脚本路径
@@ -105,9 +105,9 @@ toggle_watchdog() {
     # 动态检测当前 cron 任务的状态和设定的时间
     EXISTING_CRON=$(crontab -l 2>/dev/null | grep "$WATCHDOG_SCRIPT")
     if [ -n "$EXISTING_CRON" ]; then
-        # 从 cron 表达式中提取分钟间隔 (例如 */3 中的 3)
+        # 从 cron 表达式中提取分钟间隔
         CURRENT_INTERVAL=$(echo "$EXISTING_CRON" | awk '{print $1}' | cut -d'/' -f2)
-        [ "$CURRENT_INTERVAL" = "*" ] && CURRENT_INTERVAL="1" # 兼容 * * * * * 的情况
+        [ "$CURRENT_INTERVAL" = "*" ] && CURRENT_INTERVAL="1" 
         [ -z "$CURRENT_INTERVAL" ] && CURRENT_INTERVAL="未知"
         
         echo -e "当前状态: ${GREEN}▶ 已开启 (后台每 $CURRENT_INTERVAL 分钟守护中)${NC}"
@@ -124,7 +124,6 @@ toggle_watchdog() {
     case $wd_choice in
         1)
             read -p "请输入后台检测间隔(分钟，直接回车默认3分钟): " interval
-            # 校验输入是否为正整数，否则使用默认值 3
             if ! [[ "$interval" =~ ^[1-9][0-9]*$ ]]; then
                 interval=3
                 echo -e "${YELLOW}输入无效或为空，自动使用默认间隔: 3 分钟${NC}"
@@ -149,7 +148,6 @@ if ! check_net; then
     sleep 3
     ip link set $WIFI_IFACE up
     
-    # 如果系统使用 NetworkManager 管理网络，则同时触发 nmcli 重置
     if command -v nmcli >/dev/null 2>&1; then
         nmcli radio wifi off
         sleep 2
@@ -159,7 +157,6 @@ fi
 EOF
             chmod +x $WATCHDOG_SCRIPT
             
-            # 写入 crontab 定时任务，同时剔除旧任务避免重复
             (crontab -l 2>/dev/null | grep -v "$WATCHDOG_SCRIPT"; echo "$CRON_JOB") | crontab -
             echo -e "${GREEN}✅ 自动重连已成功开启！即使面板关闭，后台也会每 $interval 分钟守护一次 WiFi 状态。${NC}"
             sleep 3
@@ -170,13 +167,8 @@ EOF
             echo -e "${YELLOW}❌ 自动重连守护进程已移除。${NC}"
             sleep 2
             ;;
-        0)
-            return
-            ;;
-        *)
-            echo -e "${RED}输入无效。${NC}"
-            sleep 1
-            ;;
+        0) return ;;
+        *) echo -e "${RED}输入无效。${NC}"; sleep 1 ;;
     esac
 }
 
@@ -187,28 +179,23 @@ show_network_info() {
     echo -e "${CYAN}          查看详细网络信息            ${NC}"
     echo -e "${CYAN}======================================${NC}"
     
-    WIFI_IF=$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="wifi" {print $1}' | grep -v 'p2p' | head -n 1)
+    WIFI_IF=$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null | awk -F: '$2=="wifi" {print $1}' | grep -v 'p2p' | head -n 1)
     [ -z "$WIFI_IF" ] && WIFI_IF="wlan0"
 
     echo -e "${YELLOW}正在获取系统网络信息，请稍候...${NC}"
     
-    # 获取 MAC 地址
-    MAC_ADDR=$(ip link show "$WIFI_IF" | awk '/ether/ {print $2}')
+    MAC_ADDR=$(ip link show "$WIFI_IF" 2>/dev/null | awk '/ether/ {print $2}')
     [ -z "$MAC_ADDR" ] && MAC_ADDR="未知"
     
-    # 获取局域网 IP
     LAN_IP=$(ip -4 addr show dev "$WIFI_IF" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
     [ -z "$LAN_IP" ] && LAN_IP="未分配/未连接"
     
-    # 获取默认网关
-    GATEWAY=$(ip route | awk '/default/ {print $3}' | head -n 1)
+    GATEWAY=$(ip route 2>/dev/null | awk '/default/ {print $3}' | head -n 1)
     [ -z "$GATEWAY" ] && GATEWAY="未知/未配置"
     
-    # 获取 DNS
-    DNS=$(grep -m 1 nameserver /etc/resolv.conf | awk '{print $2}')
+    DNS=$(grep -m 1 nameserver /etc/resolv.conf 2>/dev/null | awk '{print $2}')
     [ -z "$DNS" ] && DNS="未知"
     
-    # 获取公网 IP (设置 3 秒超时防卡死)
     PUBLIC_IP=$(curl -s --connect-timeout 3 ifconfig.me || echo "获取失败/无外网")
 
     echo "--------------------------------------"
@@ -234,11 +221,9 @@ config_ip_mode() {
         sleep 2; return
     fi
 
-    # 动态获取主要的物理无线网卡接口
     WIFI_IF=$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="wifi" {print $1}' | grep -v 'p2p' | head -n 1)
     [ -z "$WIFI_IF" ] && WIFI_IF="wlan0"
 
-    # 精准获取当前正在该网卡上活动的连接配置名称 (解决部分系统类型不匹配问题)
     CONN_NAME=$(nmcli -t -f DEVICE,CONNECTION device status | grep "^$WIFI_IF:" | cut -d: -f2)
     
     if [ -z "$CONN_NAME" ] || [ "$CONN_NAME" == "--" ]; then
@@ -259,31 +244,26 @@ config_ip_mode() {
         1)
             echo -e "${YELLOW}警告: 若设置错误可能导致 NAS 断网失联！${NC}"
             read -p "请输入静态 IP (如 192.168.1.100, 直接回车取消): " static_ip
-            [ -z "$static_ip" ] && { echo "已取消设置。"; sleep 1; return; }
+            [ -z "$static_ip" ] && return
             
-            read -p "请输入子网掩码前缀 (通常为 24，代表 255.255.255.0，直接回车默认24): " prefix
+            read -p "请输入子网掩码前缀 (通常为 24, 直接回车默认24): " prefix
             [ -z "$prefix" ] && prefix=24
             
             read -p "请输入默认网关 (如路由器 IP 192.168.1.1): " gateway
-            [ -z "$gateway" ] && { echo "已取消设置。"; sleep 1; return; }
+            [ -z "$gateway" ] && return
             
             read -p "请输入 DNS (直接回车默认使用 223.5.5.5): " dns
             [ -z "$dns" ] && dns="223.5.5.5"
             
             echo -e "${YELLOW}正在将 $CONN_NAME 配置为静态 IP...${NC}"
-            
-            # 写入静态配置
             nmcli con mod "$CONN_NAME" ipv4.addresses "$static_ip/$prefix" ipv4.gateway "$gateway" ipv4.dns "$dns" ipv4.method manual
-            
-            # 重启连接以生效
             nmcli con down "$CONN_NAME" >/dev/null 2>&1
             nmcli con up "$CONN_NAME" >/dev/null 2>&1
             
             if [ $? -eq 0 ]; then
                 echo -e "${GREEN}✅ 静态 IP [$static_ip] 设置成功！网络已重新连接。${NC}"
             else
-                echo -e "${RED}❌ 设置失败，请检查网段参数是否与路由器匹配。${NC}"
-                # 尝试回滚到 DHCP
+                echo -e "${RED}❌ 设置失败。正在尝试回滚...${NC}"
                 nmcli con mod "$CONN_NAME" ipv4.method auto
                 nmcli con up "$CONN_NAME" >/dev/null 2>&1
             fi
@@ -291,19 +271,14 @@ config_ip_mode() {
             ;;
         2)
             echo -e "${YELLOW}正在将 $CONN_NAME 恢复为 DHCP 自动获取 IP...${NC}"
-            
-            # 清理之前的静态配置信息，并设置为自动获取
             nmcli con mod "$CONN_NAME" ipv4.addresses "" ipv4.gateway "" ipv4.dns "" ipv4.method auto
-            
-            # 重启连接以生效
             nmcli con down "$CONN_NAME" >/dev/null 2>&1
             nmcli con up "$CONN_NAME" >/dev/null 2>&1
             
             if [ $? -eq 0 ]; then
-                # 获取系统重新分配的 IP
-                WIFI_IF=$(nmcli -t -f DEVICE,NAME connection show --active | awk -F: '$2=="'"$CONN_NAME"'" {print $1}')
-                NEW_IP=$(ip -4 addr show dev "$WIFI_IF" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
-                echo -e "${GREEN}✅ 已成功恢复为动态 IP！当前自动获取的新 IP 为: ${NEW_IP}${NC}"
+                WIFI_IF_NEW=$(nmcli -t -f DEVICE,NAME connection show --active | awk -F: '$2=="'"$CONN_NAME"'" {print $1}')
+                NEW_IP=$(ip -4 addr show dev "$WIFI_IF_NEW" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
+                echo -e "${GREEN}✅ 已成功恢复动态 IP！当前新 IP 为: ${NEW_IP}${NC}"
             else
                 echo -e "${RED}❌ 恢复 DHCP 失败，请检查网络环境。${NC}"
             fi
@@ -312,6 +287,142 @@ config_ip_mode() {
         0) return ;;
         *) echo -e "${RED}输入无效。${NC}"; sleep 1 ;;
     esac
+}
+
+# --- 功能: 多网卡优先级设定 (新增) ---
+config_priority() {
+    clear
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${CYAN}      多网卡优先级设定 (网线/WiFi)    ${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "当 NAS 同时连接网线和 WiFi 时，可通过修改 Metric 决定流量走哪边。"
+    echo -e "💡 ${YELLOW}说明: Metric 值越小，优先级越高。${NC}\n"
+    
+    if ! command -v nmcli >/dev/null 2>&1; then
+        echo -e "${RED}未检测到 nmcli，该功能不可用。${NC}"
+        sleep 2; return
+    fi
+
+    # 获取当前所有的活动连接
+    echo -e "${CYAN}当前活动的网络连接：${NC}"
+    nmcli -t -f NAME,DEVICE,TYPE connection show --active | awk -F: '{print "▶ 连接名: \033[0;32m"$1"\033[0m (接口: "$2" | 类型: "$3")"}'
+    echo "--------------------------------------"
+    
+    read -p "请输入要优先使用的网络连接名 (如 Wired connection 1，输入 q 返回): " pri_conn
+    [[ "$pri_conn" == "q" || "$pri_conn" == "Q" || -z "$pri_conn" ]] && return
+    
+    read -p "请输入要作为备用的次要网络连接名 (如不设置可直接回车跳过): " sec_conn
+    
+    echo -e "${YELLOW}正在配置路由优先级...${NC}"
+    
+    # 优先连接 Metric 设为 50，备用设为 100
+    nmcli con mod "$pri_conn" ipv4.route-metric 50
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}优先通道 [$pri_conn] 配置完成。${NC}"
+    else
+        echo -e "${RED}设置失败，请检查名称是否输入正确。${NC}"
+        read -n 1 -s -r -p "按任意键返回..."
+        return
+    fi
+    
+    if [ -n "$sec_conn" ]; then
+        nmcli con mod "$sec_conn" ipv4.route-metric 100
+        echo -e "${GREEN}备用通道 [$sec_conn] 配置完成。${NC}"
+    fi
+    
+    # 重启连接以生效
+    echo -e "${YELLOW}正在重启网络接口使优先级生效...${NC}"
+    nmcli con up "$pri_conn" >/dev/null 2>&1
+    [ -n "$sec_conn" ] && nmcli con up "$sec_conn" >/dev/null 2>&1
+    
+    echo -e "${GREEN}✅ 多网卡优先级配置成功！${NC}"
+    echo "当前的默认路由规则如下 (留意 default 行末尾的 metric 值):"
+    ip route | grep default
+    
+    read -n 1 -s -r -p "按任意键返回..."
+}
+
+# --- 功能: 终端全链路测速 (新增) ---
+run_speedtest() {
+    clear
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${CYAN}        终端全链路网络测速            ${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "正在检测系统测速环境，请稍候..."
+    
+    if command -v python3 >/dev/null 2>&1; then
+        echo -e "${GREEN}检测到 Python3 环境，正在拉取 Speedtest-cli 工具测速...${NC}"
+        echo -e "${YELLOW}(测速过程约需 30秒-1分钟，请耐心等待测速节点匹配)${NC}"
+        echo "--------------------------------------"
+        wget -qO- https://ghfast.top/https://raw.githubusercontent.com/sivel/speedtest-cli/master/speedtest.py | python3 -
+    elif command -v python >/dev/null 2>&1; then
+        echo -e "${GREEN}检测到 Python 环境，正在拉取 Speedtest-cli 工具测速...${NC}"
+        echo -e "${YELLOW}(测速过程约需 30秒-1分钟，请耐心等待测速节点匹配)${NC}"
+        echo "--------------------------------------"
+        wget -qO- https://ghfast.top/https://raw.githubusercontent.com/sivel/speedtest-cli/master/speedtest.py | python -
+    else
+        echo -e "${RED}未检测到 Python 环境，已降级为基础模式测速。${NC}"
+        echo -e "将使用 wget 工具从全球可用节点盲测下载速度...\n"
+        echo -e "${CYAN}▶ 正在进行下载测速 (按 Ctrl+C 可提前中断)...${NC}"
+        wget -O /dev/null http://speedtest.tele2.net/10MB.zip --show-progress
+        echo -e "\n${GREEN}✅ 基础测速完成。${NC}"
+    fi
+    
+    echo "--------------------------------------"
+    read -n 1 -s -r -p "按任意键返回主菜单..."
+}
+
+# --- 功能: 网络全身体检大夫 (新增) ---
+network_diagnose() {
+    clear
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${CYAN}         网络全身体检大夫             ${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${YELLOW}正在逐步排查网络连通性，请耐心等待...${NC}"
+    echo "--------------------------------------"
+    
+    # 1. 检查物理网卡状态
+    DEF_IF=$(ip route | grep default | head -n 1 | awk '{print $5}')
+    [ -z "$DEF_IF" ] && DEF_IF="未知网卡"
+    echo -n "[节点 1] 本地活动网卡 ($DEF_IF) 状态: "
+    if ip link show "$DEF_IF" >/dev/null 2>&1; then
+        echo -e "${GREEN}工作正常 (UP)${NC}"
+    else
+        echo -e "${RED}异常 (DOWN 或不存在)，请检查网线或驱动。${NC}"
+    fi
+    sleep 1
+    
+    # 2. 检查网关连通性
+    GATEWAY=$(ip route | awk '/default/ {print $3}' | head -n 1)
+    echo -n "[节点 2] 局域网网关 ($GATEWAY) 连通性: "
+    if [ -n "$GATEWAY" ] && ping -c 2 -W 2 "$GATEWAY" >/dev/null 2>&1; then
+        echo -e "${GREEN}畅通 (本机可连通路由器)${NC}"
+    else
+        echo -e "${RED}不通！可能 IP 冲突、密码错误或路由器已关机。${NC}"
+    fi
+    sleep 1
+    
+    # 3. 检查 DNS 解析
+    DNS=$(grep -m 1 nameserver /etc/resolv.conf | awk '{print $2}')
+    echo -n "[节点 3] DNS 解析服务器 ($DNS) 状态: "
+    if [ -n "$DNS" ] && ping -c 2 -W 2 "$DNS" >/dev/null 2>&1; then
+        echo -e "${GREEN}正常响应${NC}"
+    else
+        echo -e "${RED}无响应！可能导致无法打开网页，建议配置静态 DNS。${NC}"
+    fi
+    sleep 1
+    
+    # 4. 检查外网连通性
+    echo -n "[节点 4] 互联网公网节点连通性: "
+    if ping -c 2 -W 2 223.5.5.5 >/dev/null 2>&1 || ping -c 2 -W 2 114.114.114.114 >/dev/null 2>&1; then
+        echo -e "${GREEN}完美连通 (你的 NAS 已成功接入广域网)${NC}"
+    else
+        echo -e "${RED}失败！可能路由器欠费断网，或 NAS 受到网络限制。${NC}"
+    fi
+    
+    echo "--------------------------------------"
+    echo -e "${CYAN}体检完毕！如果某一项显示红字，请着重排查对应设备。${NC}"
+    read -n 1 -s -r -p "按任意键返回..."
 }
 
 # --- 功能: 开启/关闭 WiFi 热点 (AP模式) ---
@@ -355,7 +466,6 @@ toggle_hotspot() {
             ;;
         2)
             echo -e "${YELLOW}正在尝试关闭热点...${NC}"
-            # 查找类型为 wifi 且被标记为 hotspot 的活动连接，并断开它
             HOTSPOT_CONN=$(nmcli -t -f NAME,TYPE,ACTIVE connection | awk -F: '$3=="yes" && $2=="802-11-wireless" {print $1}' | head -n 1)
             if [ -n "$HOTSPOT_CONN" ]; then
                 nmcli con down "$HOTSPOT_CONN" >/dev/null 2>&1
@@ -380,7 +490,6 @@ install_driver() {
     echo -e "${YELLOW}正在检测系统硬件与驱动状态...${NC}"
     sleep 1
 
-    # 1. 检测是否已存在可用的无线网卡接口
     WIFI_IF=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^wl|^wlan' | head -n 1)
     if [ -n "$WIFI_IF" ]; then
         echo -e "${GREEN}✅ 检测到系统已有可工作的无线网卡接口 ($WIFI_IF)！${NC}"
@@ -393,16 +502,12 @@ install_driver() {
         fi
     fi
 
-    # 2. 检测 USB 硬件底层芯片 ID
     USB_ID="unknown"
     if command -v lsusb >/dev/null 2>&1; then
-        # 查找常见的 Realtek 8188 设备硬件 ID
         USB_ID=$(lsusb | grep -i -E "0bda:8179|0bda:f179" | awk '{print $6}' | head -n 1)
     fi
 
     DRV_FILE=""
-    
-    # 3. 智能判定环节
     if [ "$USB_ID" == "0bda:8179" ]; then
         echo -e "${GREEN}🔍 自动检测到网卡芯片: RTL8188ETV/EUS (硬件ID: 0bda:8179)${NC}"
         DRV_FILE="rtl8188etv-0808.tar.gz"
@@ -428,29 +533,20 @@ install_driver() {
     fi
 
     echo -e "${YELLOW}正在拉取驱动包 [$DRV_FILE] 和安装脚本...${NC}"
-    
-    # 创建临时工作目录
     mkdir -p /tmp/wifi_driver && cd /tmp/wifi_driver
-    
-    # 自动下载仓库中对应的驱动压缩包
     wget -q --show-progress -O "$DRV_FILE" "https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/$DRV_FILE"
-    
-    # 自动下载执行逻辑脚本
     wget -q -O wifi_install.sh "https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/wifi_install.sh"
 
     if [ -f "$DRV_FILE" ] && [ -f "wifi_install.sh" ]; then
         echo -e "${GREEN}下载完成，开始向系统注入驱动...${NC}"
-        # 喂入 -f 参数执行真正安装，解决光弹帮助文档的问题
         bash wifi_install.sh -f "$DRV_FILE"
         echo -e "${GREEN}安装流程结束！如果未报错，您可以拔插一次网卡尝试连接了。${NC}"
     else
         echo -e "${RED}❌ 驱动文件下载失败，请检查网络是否畅通。${NC}"
     fi
     
-    # 清理现场
     cd /root
     rm -rf /tmp/wifi_driver
-    
     echo "按任意键返回..."
     read -n 1
 }
@@ -468,14 +564,11 @@ connect_wifi() {
         return
     fi
 
-    # 动态获取主要的物理无线网卡接口 (排除 p2p-dev 等虚拟接口)
     WIFI_IF=$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="wifi" {print $1}' | grep -v 'p2p' | head -n 1)
     [ -z "$WIFI_IF" ] && WIFI_IF="wlan0"
 
-    # 获取当前连接状态和IP
     CURRENT_SSID=$(nmcli -t -f ACTIVE,SSID dev wifi | grep '^yes' | cut -d: -f2 | head -n 1)
     if [ -n "$CURRENT_SSID" ]; then
-        # 尝试获取该网卡的 IPv4 地址
         CURRENT_IP=$(ip -4 addr show dev "$WIFI_IF" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
         [ -z "$CURRENT_IP" ] && CURRENT_IP="获取中/无"
         echo -e "当前状态: ${GREEN}已连接 [${CURRENT_SSID}]${NC}  IP: ${GREEN}${CURRENT_IP}${NC}"
@@ -485,17 +578,14 @@ connect_wifi() {
     echo "--------------------------------------"
     
     echo "正在扫描附近 WiFi (请耐心等待3-5秒)..."
-    # 指定网卡强制刷新扫描缓存
     nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1
     sleep 2
     
-    # 获取列表，替换英文表头为中文，并强制指定 ifname 避免双层重复输出
     nmcli device wifi list ifname "$WIFI_IF" | sed 's/IN-USE/状态/g; s/BSSID/MAC地址/g; s/SSID/网络名称/g; s/MODE/模式/g; s/CHAN/信道/g; s/RATE/速率/g; s/SIGNAL/信号/g; s/BARS/强度/g; s/SECURITY/加密方式/g'
     
     echo "--------------------------------------"
     read -p "请输入要连接的 WiFi 名称 (直接回车返回主菜单): " ssid
     
-    # 增加直接回车返回功能判断
     if [ -z "$ssid" ]; then
         return
     fi
@@ -532,12 +622,15 @@ while true; do
     echo "  4. 查看详细网络信息 (IP/MAC/网关/公网IP等)"
     echo "  5. 配置静态/动态 IP (固定IP或恢复DHCP)"
     echo "  6. 开启 WiFi 热点 (将 NAS 作为路由器使用)"
-    echo -e "  7. ${GREEN}在线更新控制面板${NC} (当前版本 v${VERSION})"
+    echo "  7. 多网卡优先级设定 (网线/WiFi 冲突管理)"
+    echo "  8. 终端全链路网络测速 (宽带速度测试)"
+    echo "  9. 网络全身体检大夫 (一键诊断断网原因)"
+    echo -e " 10. ${GREEN}在线更新控制面板${NC} (当前版本 v${VERSION})"
     echo "  0. 退出面板"
     echo -e "${CYAN}-------------------------------------------------${NC}"
     echo -e "  💡 提示: 在终端任意位置输入 ${GREEN}wifi${NC} 即可快速打开本面板"
     echo -e "${CYAN}=================================================${NC}"
-    read -p "请输入选项数字 [0-7]: " choice
+    read -p "请输入选项数字 [0-10]: " choice
 
     case $choice in
         1) install_driver ;;
@@ -546,8 +639,11 @@ while true; do
         4) show_network_info ;;
         5) config_ip_mode ;;
         6) toggle_hotspot ;;
-        7) update_script ;;
+        7) config_priority ;;
+        8) run_speedtest ;;
+        9) network_diagnose ;;
+       10) update_script ;;
         0) clear; echo "已退出 WiFi 控制面板。"; exit 0 ;;
-        *) echo -e "${RED}输入无效，请重新输入 0-7 之间的数字。${NC}"; sleep 1 ;;
+        *) echo -e "${RED}输入无效，请重新输入 0-10 之间的数字。${NC}"; sleep 1 ;;
     esac
 done
