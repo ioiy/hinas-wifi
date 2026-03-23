@@ -5,7 +5,7 @@
 # 项目地址: https://github.com/ioiy/hinas-wifi
 # ==========================================
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 # 远程脚本地址 (已添加国内加速代理，用于一键更新)
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 # 守护进程脚本路径
@@ -76,13 +76,20 @@ toggle_watchdog() {
     echo -e "${CYAN}       WiFi 断网自动重连守护进程      ${NC}"
     echo -e "${CYAN}======================================${NC}"
     
-    if [ -f "$WATCHDOG_SCRIPT" ]; then
-        echo -e "当前状态: ${GREEN}▶ 已开启 (后台实时守护中)${NC}"
+    # 动态检测当前 cron 任务的状态和设定的时间
+    EXISTING_CRON=$(crontab -l 2>/dev/null | grep "$WATCHDOG_SCRIPT")
+    if [ -n "$EXISTING_CRON" ]; then
+        # 从 cron 表达式中提取分钟间隔 (例如 */3 中的 3)
+        CURRENT_INTERVAL=$(echo "$EXISTING_CRON" | awk '{print $1}' | cut -d'/' -f2)
+        [ "$CURRENT_INTERVAL" = "*" ] && CURRENT_INTERVAL="1" # 兼容 * * * * * 的情况
+        [ -z "$CURRENT_INTERVAL" ] && CURRENT_INTERVAL="未知"
+        
+        echo -e "当前状态: ${GREEN}▶ 已开启 (后台每 $CURRENT_INTERVAL 分钟守护中)${NC}"
     else
         echo -e "当前状态: ${RED}⏸ 未开启${NC}"
     fi
     echo "--------------------------------------"
-    echo "1. 开启自动重连 (可自定义检测时间)"
+    echo "1. 开启/修改自动重连 (可自定义检测时间)"
     echo "2. 关闭自动重连"
     echo "0. 返回主菜单"
     echo -e "${CYAN}======================================${NC}"
@@ -199,10 +206,10 @@ connect_wifi() {
     nmcli device wifi list ifname "$WIFI_IF" | sed 's/IN-USE/状态/g; s/BSSID/MAC地址/g; s/SSID/网络名称/g; s/MODE/模式/g; s/CHAN/信道/g; s/RATE/速率/g; s/SIGNAL/信号/g; s/BARS/强度/g; s/SECURITY/加密方式/g'
     
     echo "--------------------------------------"
-    read -p "请输入要连接的 WiFi 名称 (输入 q 返回主菜单): " ssid
+    read -p "请输入要连接的 WiFi 名称 (直接回车返回主菜单): " ssid
     
-    # 增加返回功能判断
-    if [[ "$ssid" == "q" || "$ssid" == "Q" || -z "$ssid" ]]; then
+    # 增加直接回车返回功能判断
+    if [ -z "$ssid" ]; then
         return
     fi
     
@@ -234,9 +241,11 @@ while true; do
     echo -e "${CYAN}=================================================${NC}"
     echo "  1. 一键安装 WIFI 驱动 (RTL8188等)"
     echo "  2. 扫描并连接 WIFI 网络"
-    echo "  3. 开启/关闭防掉线自动重连 (无人值守必备)"
+    echo "  3. 开启/修改防掉线自动重连 (无人值守必备)"
     echo -e "  4. ${GREEN}在线更新控制面板${NC} (当前版本 v${VERSION})"
     echo "  0. 退出面板"
+    echo -e "${CYAN}-------------------------------------------------${NC}"
+    echo -e "  💡 提示: 在终端任意位置输入 ${GREEN}wifi${NC} 即可快速打开本面板"
     echo -e "${CYAN}=================================================${NC}"
     read -p "请输入选项数字 [0-4]: " choice
 
