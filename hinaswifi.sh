@@ -5,7 +5,7 @@
 # 项目地址: https://github.com/ioiy/hinas-wifi
 # ==========================================
 
-VERSION="1.6.1"
+VERSION="1.7.0"
 # 远程脚本地址 (已添加国内加速代理，用于一键更新)
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 # 守护进程脚本路径
@@ -370,28 +370,64 @@ toggle_hotspot() {
     esac
 }
 
-# --- 功能: 安装WiFi驱动 ---
+# --- 功能: 安装WiFi驱动 (带智能硬件探测) ---
 install_driver() {
     clear
     echo -e "${CYAN}======================================${NC}"
     echo -e "${CYAN}           安装 WiFi 驱动             ${NC}"
     echo -e "${CYAN}======================================${NC}"
-    echo "请选择要安装的驱动型号 (由本仓库提供):"
-    echo "1. RTL8188ETV (多见于水星/迅捷等老款无线网卡)"
-    echo "2. RTL8188FTV (多见于杂牌免驱版/微型无线网卡)"
-    echo "0. 返回主菜单"
-    echo "--------------------------------------"
-    read -p "请输入选项: " drv_choice
+    
+    echo -e "${YELLOW}正在检测系统硬件与驱动状态...${NC}"
+    sleep 1
+
+    # 1. 检测是否已存在可用的无线网卡接口
+    WIFI_IF=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^wl|^wlan' | head -n 1)
+    if [ -n "$WIFI_IF" ]; then
+        echo -e "${GREEN}✅ 检测到系统已有可工作的无线网卡接口 ($WIFI_IF)！${NC}"
+        echo -e "${GREEN}这通常意味着您的驱动已经安装完毕且正常运行。${NC}"
+        read -p "是否仍然强制重新安装驱动？(y/n): " force_install
+        if [[ "$force_install" != "y" && "$force_install" != "Y" ]]; then
+            echo "已取消安装。"
+            sleep 1
+            return
+        fi
+    fi
+
+    # 2. 检测 USB 硬件底层芯片 ID
+    USB_ID="unknown"
+    if command -v lsusb >/dev/null 2>&1; then
+        # 查找常见的 Realtek 8188 设备硬件 ID
+        USB_ID=$(lsusb | grep -i -E "0bda:8179|0bda:f179" | awk '{print $6}' | head -n 1)
+    fi
 
     DRV_FILE=""
-    case $drv_choice in
-        1) DRV_FILE="rtl8188etv-0808.tar.gz" ;;
-        2) DRV_FILE="rtl8188ftv-0808.tar.gz" ;;
-        0) return ;;
-        *) echo -e "${RED}无效选项。${NC}"; sleep 1; return ;;
-    esac
+    
+    # 3. 智能判定环节
+    if [ "$USB_ID" == "0bda:8179" ]; then
+        echo -e "${GREEN}🔍 自动检测到网卡芯片: RTL8188ETV/EUS (硬件ID: 0bda:8179)${NC}"
+        DRV_FILE="rtl8188etv-0808.tar.gz"
+    elif [ "$USB_ID" == "0bda:f179" ]; then
+        echo -e "${GREEN}🔍 自动检测到网卡芯片: RTL8188FTV/FUS (硬件ID: 0bda:f179)${NC}"
+        DRV_FILE="rtl8188ftv-0808.tar.gz"
+    else
+        echo -e "${RED}❌ 未能自动识别到受支持的 RTL8188 系列网卡。${NC}"
+        echo -e "请确认网卡已插紧，或您的网卡芯片不属于 8188ETV/FTV。\n"
+        echo "您仍可以强制手动选择要尝试安装的驱动型号:"
+        echo "1. RTL8188ETV (多见于水星/迅捷等老款无线网卡)"
+        echo "2. RTL8188FTV (多见于杂牌免驱版/微型无线网卡)"
+        echo "0. 返回主菜单"
+        echo "--------------------------------------"
+        read -p "请输入选项: " drv_choice
 
-    echo -e "${YELLOW}正在拉取驱动包和安装脚本...${NC}"
+        case $drv_choice in
+            1) DRV_FILE="rtl8188etv-0808.tar.gz" ;;
+            2) DRV_FILE="rtl8188ftv-0808.tar.gz" ;;
+            0) return ;;
+            *) echo -e "${RED}无效选项。${NC}"; sleep 1; return ;;
+        esac
+    fi
+
+    echo -e "${YELLOW}正在拉取驱动包 [$DRV_FILE] 和安装脚本...${NC}"
     
     # 创建临时工作目录
     mkdir -p /tmp/wifi_driver && cd /tmp/wifi_driver
@@ -406,7 +442,7 @@ install_driver() {
         echo -e "${GREEN}下载完成，开始向系统注入驱动...${NC}"
         # 喂入 -f 参数执行真正安装，解决光弹帮助文档的问题
         bash wifi_install.sh -f "$DRV_FILE"
-        echo -e "${GREEN}安装流程结束！如果未报错，您可以插入网卡尝试连接了。${NC}"
+        echo -e "${GREEN}安装流程结束！如果未报错，您可以拔插一次网卡尝试连接了。${NC}"
     else
         echo -e "${RED}❌ 驱动文件下载失败，请检查网络是否畅通。${NC}"
     fi
