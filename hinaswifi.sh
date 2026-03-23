@@ -5,7 +5,7 @@
 # 项目地址: https://github.com/ioiy/hinas-wifi
 # ==========================================
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 # 远程脚本地址 (已添加国内加速代理，用于一键更新)
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 # 守护进程脚本路径
@@ -174,24 +174,51 @@ connect_wifi() {
         return
     fi
 
+    # 动态获取主要的物理无线网卡接口 (排除 p2p-dev 等虚拟接口)
+    WIFI_IF=$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="wifi" {print $1}' | grep -v 'p2p' | head -n 1)
+    [ -z "$WIFI_IF" ] && WIFI_IF="wlan0"
+
+    # 获取当前连接状态和IP
+    CURRENT_SSID=$(nmcli -t -f ACTIVE,SSID dev wifi | grep '^yes' | cut -d: -f2 | head -n 1)
+    if [ -n "$CURRENT_SSID" ]; then
+        # 尝试获取该网卡的 IPv4 地址
+        CURRENT_IP=$(ip -4 addr show dev "$WIFI_IF" 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1)
+        [ -z "$CURRENT_IP" ] && CURRENT_IP="获取中/无"
+        echo -e "当前状态: ${GREEN}已连接 [${CURRENT_SSID}]${NC}  IP: ${GREEN}${CURRENT_IP}${NC}"
+    else
+        echo -e "当前状态: ${RED}未连接${NC}"
+    fi
+    echo "--------------------------------------"
+    
     echo "正在扫描附近 WiFi (请耐心等待3-5秒)..."
-    # 强制刷新扫描缓存
-    nmcli device wifi rescan >/dev/null 2>&1
+    # 指定网卡强制刷新扫描缓存
+    nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1
     sleep 2
     
-    # 获取列表，替换英文表头为中文，并使用 awk 过滤掉重复行 (解决虚拟网卡导致的重复输出问题)
-    nmcli device wifi list | sed 's/IN-USE/状态/g; s/BSSID/MAC地址/g; s/SSID/网络名称/g; s/MODE/模式/g; s/CHAN/信道/g; s/RATE/速率/g; s/SIGNAL/信号/g; s/BARS/强度/g; s/SECURITY/加密方式/g' | awk '!seen[$0]++'
+    # 获取列表，替换英文表头为中文，并强制指定 ifname 避免双层重复输出
+    nmcli device wifi list ifname "$WIFI_IF" | sed 's/IN-USE/状态/g; s/BSSID/MAC地址/g; s/SSID/网络名称/g; s/MODE/模式/g; s/CHAN/信道/g; s/RATE/速率/g; s/SIGNAL/信号/g; s/BARS/强度/g; s/SECURITY/加密方式/g'
     
     echo "--------------------------------------"
-    read -p "请输入要连接的 WiFi 名称 (网络名称): " ssid
-    read -p "请输入 WiFi 密码: " password
+    read -p "请输入要连接的 WiFi 名称 (输入 q 返回主菜单): " ssid
+    
+    # 增加返回功能判断
+    if [[ "$ssid" == "q" || "$ssid" == "Q" || -z "$ssid" ]]; then
+        return
+    fi
+    
+    read -p "请输入 WiFi 密码 (无密码直接回车): " password
     
     echo -e "${YELLOW}正在尝试连接到 [$ssid] ...${NC}"
-    nmcli device wifi connect "$ssid" password "$password"
+    
+    if [ -z "$password" ]; then
+        nmcli device wifi connect "$ssid" ifname "$WIFI_IF"
+    else
+        nmcli device wifi connect "$ssid" password "$password" ifname "$WIFI_IF"
+    fi
     
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✅ 连接成功！当前网络信息：${NC}"
-        ip -4 addr show | grep -E 'wl|wlan'
+        ip -4 addr show dev "$WIFI_IF" | grep inet
     else
         echo -e "${RED}❌ 连接失败！请检查密码是否正确，或驱动是否正常工作。${NC}"
     fi
