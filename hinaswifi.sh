@@ -5,6 +5,7 @@
 # 项目地址: https://github.com/ioiy/hinas-wifi
 # ==========================================
 
+VERSION="1.1.0"
 # 远程脚本地址 (已添加国内加速代理，用于一键更新)
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 # 守护进程脚本路径
@@ -40,6 +41,7 @@ update_script() {
     echo -e "${CYAN}======================================${NC}"
     echo -e "${CYAN}         在线检测与更新控制面板       ${NC}"
     echo -e "${CYAN}======================================${NC}"
+    echo -e "${YELLOW}当前版本: v${VERSION}${NC}"
     echo -e "${YELLOW}正在检测外网连接...${NC}"
     
     if ! check_network; then
@@ -69,8 +71,6 @@ update_script() {
 
 # --- 功能: 开启/关闭断网自动重连 ---
 toggle_watchdog() {
-    CRON_JOB="*/3 * * * * $WATCHDOG_SCRIPT"
-
     clear
     echo -e "${CYAN}======================================${NC}"
     echo -e "${CYAN}       WiFi 断网自动重连守护进程      ${NC}"
@@ -82,7 +82,7 @@ toggle_watchdog() {
         echo -e "当前状态: ${RED}⏸ 未开启${NC}"
     fi
     echo "--------------------------------------"
-    echo "1. 开启自动重连 (每3分钟检测)"
+    echo "1. 开启自动重连 (可自定义检测时间)"
     echo "2. 关闭自动重连"
     echo "0. 返回主菜单"
     echo -e "${CYAN}======================================${NC}"
@@ -90,6 +90,15 @@ toggle_watchdog() {
 
     case $wd_choice in
         1)
+            read -p "请输入后台检测间隔(分钟，直接回车默认3分钟): " interval
+            # 校验输入是否为正整数，否则使用默认值 3
+            if ! [[ "$interval" =~ ^[1-9][0-9]*$ ]]; then
+                interval=3
+                echo -e "${YELLOW}输入无效或为空，自动使用默认间隔: 3 分钟${NC}"
+            fi
+            
+            CRON_JOB="*/$interval * * * * $WATCHDOG_SCRIPT"
+            
             echo "正在配置后台守护进程..."
             cat > $WATCHDOG_SCRIPT << 'EOF'
 #!/bin/bash
@@ -119,7 +128,7 @@ EOF
             
             # 写入 crontab 定时任务，同时剔除旧任务避免重复
             (crontab -l 2>/dev/null | grep -v "$WATCHDOG_SCRIPT"; echo "$CRON_JOB") | crontab -
-            echo -e "${GREEN}✅ 自动重连已成功开启！即使面板关闭，后台也会守护 WiFi 状态。${NC}"
+            echo -e "${GREEN}✅ 自动重连已成功开启！即使面板关闭，后台也会每 $interval 分钟守护一次 WiFi 状态。${NC}"
             sleep 3
             ;;
         2)
@@ -166,9 +175,15 @@ connect_wifi() {
     fi
 
     echo "正在扫描附近 WiFi (请耐心等待3-5秒)..."
-    nmcli device wifi list
+    # 强制刷新扫描缓存
+    nmcli device wifi rescan >/dev/null 2>&1
+    sleep 2
+    
+    # 获取列表，替换英文表头为中文，并使用 awk 过滤掉重复行 (解决虚拟网卡导致的重复输出问题)
+    nmcli device wifi list | sed 's/IN-USE/状态/g; s/BSSID/MAC地址/g; s/SSID/网络名称/g; s/MODE/模式/g; s/CHAN/信道/g; s/RATE/速率/g; s/SIGNAL/信号/g; s/BARS/强度/g; s/SECURITY/加密方式/g' | awk '!seen[$0]++'
+    
     echo "--------------------------------------"
-    read -p "请输入要连接的 WiFi 名称 (SSID): " ssid
+    read -p "请输入要连接的 WiFi 名称 (网络名称): " ssid
     read -p "请输入 WiFi 密码: " password
     
     echo -e "${YELLOW}正在尝试连接到 [$ssid] ...${NC}"
@@ -188,12 +203,12 @@ connect_wifi() {
 while true; do
     clear
     echo -e "${CYAN}=================================================${NC}"
-    echo -e "${CYAN}       HiNAS WiFi 控制面板 (IOIY 定制增强版)     ${NC}"
+    echo -e "${CYAN}     HiNAS WiFi 控制面板 (IOIY 定制增强版) v${VERSION}  ${NC}"
     echo -e "${CYAN}=================================================${NC}"
     echo "  1. 一键安装 WIFI 驱动 (RTL8188等)"
     echo "  2. 扫描并连接 WIFI 网络"
     echo "  3. 开启/关闭防掉线自动重连 (无人值守必备)"
-    echo -e "  4. ${GREEN}在线更新控制面板${NC} (从 ioiy/hinas-wifi 获取)"
+    echo -e "  4. ${GREEN}在线更新控制面板${NC} (当前版本 v${VERSION})"
     echo "  0. 退出面板"
     echo -e "${CYAN}=================================================${NC}"
     read -p "请输入选项数字 [0-4]: " choice
