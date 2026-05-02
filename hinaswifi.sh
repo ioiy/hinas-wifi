@@ -5,7 +5,7 @@
 # 项目地址: https://github.com/ioiy/hinas-wifi
 # ==========================================
 
-VERSION="1.8.1"
+VERSION="1.8.3"
 # 远程脚本地址 (已添加国内加速代理，用于一键更新)
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 # 守护进程脚本路径
@@ -117,6 +117,7 @@ toggle_watchdog() {
     echo "--------------------------------------"
     echo "1. 开启/修改自动重连 (可自定义检测时间)"
     echo "2. 关闭自动重连"
+    echo "3. 查看自动重连日志 (排查断网原因)"
     echo "0. 返回主菜单"
     echo -e "${CYAN}======================================${NC}"
     read -p "请输入选项: " wd_choice
@@ -131,11 +132,16 @@ toggle_watchdog() {
             
             CRON_JOB="*/$interval * * * * $WATCHDOG_SCRIPT"
             
-            echo "正在配置后台守护进程..."
+            echo "正在配置后台暴力守护进程..."
             cat > $WATCHDOG_SCRIPT << 'EOF'
 #!/bin/bash
+# 增加文件互斥锁: 防止因路由器重启等待时间过长，导致 cron 触发的多个实例并发打架
+exec 200>/tmp/wifi_watchdog.lock
+flock -n 200 || exit 0
+
 WIFI_IFACE=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^wl|^wlan' | head -n 1)
 [ -z "$WIFI_IFACE" ] && WIFI_IFACE="wlan0"
+LOG_FILE="/tmp/wifi_watchdog.log"
 
 check_net() {
     ping -c 2 -W 3 223.5.5.5 >/dev/null 2>&1 && return 0
@@ -144,21 +150,57 @@ check_net() {
 }
 
 if ! check_net; then
+    echo "[$(date)] ⚠️ 检测到断网，开始执行多级恢复流程..." >> $LOG_FILE
+    
+    # 阶段 1: 软重启物理接口
     ip link set $WIFI_IFACE down
     sleep 3
     ip link set $WIFI_IFACE up
     
     if command -v nmcli >/dev/null 2>&1; then
         nmcli radio wifi off
-        sleep 2
+        sleep 3
         nmcli radio wifi on
     fi
+    
+    # 考虑到路由器重启通常需要 3-5 分钟，进入智能长效轮询等待期 (最多等待 4 分钟)
+    echo "[$(date)] ⏳ 软重启指令已发送。若路由器正在重启，NAS将持续等待其上线..." >> $LOG_FILE
+    
+    recovered=0
+    for i in {1..16}; do
+        sleep 15
+        if check_net; then
+            recovered=1
+            break
+        fi
+    done
+    
+    if [ $recovered -eq 1 ]; then
+        echo "[$(date)] ✅ 网络在轮询等待期间已成功恢复！" >> $LOG_FILE
+    else
+        # 阶段 2: 暴力重启底层网络服务 (大招，解决 NM 挂起和 DHCP 假死)
+        echo "[$(date)] ❌ 等待 4 分钟后仍无网络，正在暴力重启 NetworkManager 服务..." >> $LOG_FILE
+        systemctl restart NetworkManager
+        
+        # 再给 30 秒时间重新初始化网络并获取 IP
+        sleep 15
+        if ! check_net; then sleep 15; fi
+        
+        if ! check_net; then
+            echo "[$(date)] 🆘 深度恢复失败！请检查路由器是否通电，或网卡硬件是否松动。" >> $LOG_FILE
+        else
+            echo "[$(date)] ✅ NetworkManager 暴力重启后，网络恢复成功！" >> $LOG_FILE
+        fi
+    fi
+    
+    # 保持日志文件不会无限变大 (保留最后 500 行)
+    tail -n 500 $LOG_FILE > ${LOG_FILE}.tmp && mv ${LOG_FILE}.tmp $LOG_FILE
 fi
 EOF
             chmod +x $WATCHDOG_SCRIPT
             
             (crontab -l 2>/dev/null | grep -v "$WATCHDOG_SCRIPT"; echo "$CRON_JOB") | crontab -
-            echo -e "${GREEN}✅ 自动重连已成功开启！即使面板关闭，后台也会每 $interval 分钟守护一次 WiFi 状态。${NC}"
+            echo -e "${GREEN}✅ 暴力自动重连已成功开启！${NC}"
             sleep 3
             ;;
         2)
@@ -166,6 +208,20 @@ EOF
             rm -f $WATCHDOG_SCRIPT
             echo -e "${YELLOW}❌ 自动重连守护进程已移除。${NC}"
             sleep 2
+            ;;
+        3)
+            clear
+            echo -e "${CYAN}======================================${NC}"
+            echo -e "${CYAN}          自动重连监控日志            ${NC}"
+            echo -e "${CYAN}======================================${NC}"
+            if [ -f "/tmp/wifi_watchdog.log" ]; then
+                cat /tmp/wifi_watchdog.log
+            else
+                echo -e "${YELLOW}当前暂无断网恢复记录。${NC}"
+                echo "说明您的网络一直很稳定，或守护进程尚未触发。"
+            fi
+            echo "--------------------------------------"
+            read -n 1 -s -r -p "按任意键返回..."
             ;;
         0) return ;;
         *) echo -e "${RED}输入无效。${NC}"; sleep 1 ;;
