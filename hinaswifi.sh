@@ -5,7 +5,7 @@
 # 项目地址: https://github.com/ioiy/hinas-wifi
 # ==========================================
 
-VERSION="1.9.0"
+VERSION="1.9.1"
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 WATCHDOG_SCRIPT="/usr/local/bin/wifi_watchdog.sh"
 
@@ -507,6 +507,260 @@ connect_wifi() {
  read -n 1 -s -r -p "按任意键返回..."
 }
 
+
+dns_optimize() {
+ clear
+ echo -e "${CYAN}======================================${NC}"
+ echo -e "${CYAN} DNS 测速优化 ${NC}"
+ echo -e "${CYAN}======================================${NC}"
+ WIFI_IF=$(get_wifi_iface)
+ CONN=$(get_wifi_conn)
+ if [ -z "$CONN" ]; then
+ echo -e "${RED}❌ 未连接 WiFi${NC}"; read -n 1 -s -r -p "按任意键返回..."; return
+ fi
+ CURRENT_DNS=$(nmcli -t -f ipv4.dns con show "$CONN" 2>/dev/null | cut -d: -f2)
+ echo -e "当前 DNS: ${GREEN}${CURRENT_DNS:-自动}${NC}"
+ echo -e "${YELLOW}正在测速...${NC}"
+ echo "--------------------------------------"
+ DNS_LIST="223.5.5.5:阿里DNS 223.6.6.6:阿里备用 119.29.29.29:腾讯DNS 119.28.28.28:腾讯备用 180.76.76.76:百度DNS 1.1.1.1:Cloudflare"
+ BEST_DNS=""
+ BEST_TIME=99999
+ for entry in $DNS_LIST; do
+ IP=$(echo "$entry" | cut -d: -f1)
+ NAME=$(echo "$entry" | cut -d: -f2)
+ T1=$(ping -c 1 -W 2 "$IP" 2>/dev/null | grep -oP 'time=\K[0-9.]+')
+ [ -z "$T1" ] && { echo -e "  $NAME ($IP):    ${RED}无响应${NC}"; continue; }
+ T2=$(ping -c 1 -W 2 "$IP" 2>/dev/null | grep -oP 'time=\K[0-9.]+')
+ T3=$(ping -c 1 -W 2 "$IP" 2>/dev/null | grep -oP 'time=\K[0-9.]+')
+ AVG=$(echo "scale=1; ($T1+$T2+$T3)/3" | bc 2>/dev/null || echo "$T1")
+ printf "  %-12s (%s):  %6s ms\n" "$NAME" "$IP" "$AVG"
+ if [ -n "$AVG" ]; then
+ CMP=$(echo "$AVG < $BEST_TIME" | bc 2>/dev/null)
+ if [ "$CMP" = "1" ]; then
+ BEST_TIME=$AVG
+ BEST_DNS="$IP"
+ BEST_NAME="$NAME"
+ fi
+ fi
+ done
+ echo "--------------------------------------"
+ if [ -z "$BEST_DNS" ]; then
+ echo -e "${RED}❌ 所有 DNS 均无响应${NC}"
+ read -n 1 -s -r -p "按任意键返回..."; return
+ fi
+ echo -e "最快: ${GREEN}$BEST_NAME ($BEST_DNS) ${BEST_TIME}ms${NC}"
+ read -p "应用到当前连接? (y/n): " confirm
+ if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+ nmcli con mod "$CONN" ipv4.dns "$BEST_DNS" ipv4.ignore-auto-dns yes
+ nmcli con down "$CONN" >/dev/null 2>&1; nmcli con up "$CONN" >/dev/null 2>&1
+ if [ $? -eq 0 ]; then
+ echo -e "${GREEN}✅ DNS 已设为 $BEST_DNS${NC}"
+ else
+ echo -e "${RED}❌ 应用失败，回滚...${NC}"
+ nmcli con mod "$CONN" ipv4.dns "" ipv4.ignore-auto-dns no
+ nmcli con up "$CONN" >/dev/null 2>&1
+ fi
+ fi
+ read -n 1 -s -r -p "按任意键返回..."
+}
+
+channel_analysis() {
+ clear
+ echo -e "${CYAN}======================================${NC}"
+ echo -e "${CYAN} WiFi 信道分析 ${NC}"
+ echo -e "${CYAN}======================================${NC}"
+ WIFI_IF=$(get_wifi_iface)
+ echo -e "${YELLOW}正在扫描附近 WiFi...${NC}"
+ nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1
+ sleep 3
+ SCAN=$(nmcli -t -f SSID,CHAN,SIGNAL dev wifi list ifname "$WIFI_IF" 2>/dev/null)
+ if [ -z "$SCAN" ]; then
+ echo -e "${RED}❌ 扫描失败${NC}"; read -n 1 -s -r -p "按任意键返回..."; return
+ fi
+ echo "--------------------------------------"
+ echo -e "${CYAN}信道  AP数  最强信号  拥挤度${NC}"
+ echo "--------------------------------------"
+ declare -A CH_COUNT
+ declare -A CH_MAXSIG
+ while IFS=: read -r SSID CH SIG; do
+ [ -z "$CH" ] && continue
+ [ "$CH" = "--" ] && continue
+ CH=$(echo "$CH" | tr -d ' ')
+ CH_COUNT[$CH]=$(( ${CH_COUNT[$CH]:-0} + 1 ))
+ if [ -z "${CH_MAXSIG[$CH]}" ] || [ "$SIG" -gt "${CH_MAXSIG[$CH]}" ]; then
+ CH_MAXSIG[$CH]=$SIG
+ fi
+ done <<< "$SCAN"
+ for ch in $(seq 1 14); do
+ COUNT=${CH_COUNT[$ch]:-0}
+ MAXSIG=${CH_MAXSIG[$ch]:-N/A}
+ if [ "$COUNT" -eq 0 ]; then
+ CROWD="${GREEN}空闲${NC}"
+ elif [ "$COUNT" -le 2 ]; then
+ CROWD="${GREEN}良好${NC}"
+ elif [ "$COUNT" -le 5 ]; then
+ CROWD="${YELLOW}一般${NC}"
+ else
+ CROWD="${RED}拥挤${NC}"
+ fi
+ printf "  %2d    %2d    %4s    " "$ch" "$COUNT" "$MAXSIG"
+ echo -e "$CROWD"
+ done
+ echo "--------------------------------------"
+ BEST_CH=1
+ BEST_COUNT=${CH_COUNT[1]:-0}
+ for ch in 6 11; do
+ C=${CH_COUNT[$ch]:-0}
+ if [ "$C" -lt "$BEST_COUNT" ]; then
+ BEST_COUNT=$C
+ BEST_CH=$ch
+ fi
+ done
+ echo -e "推荐信道: ${GREEN}$BEST_CH${NC} (AP最少: $BEST_COUNT 个)"
+ echo -e "${YELLOW}提示: 1/6/11 互不干扰，优先选这三个${NC}"
+ CUR_CH=$(nmcli -t -f CHAN dev wifi list ifname "$WIFI_IF" 2>/dev/null | grep -v -- "--" | head -1 | cut -d: -f1 | tr -d ' ')
+ [ -n "$CUR_CH" ] && echo -e "当前信道: ${CYAN}$CUR_CH${NC}"
+ read -n 1 -s -r -p "按任意键返回..."
+}
+
+backup_restore() {
+ clear
+ echo -e "${CYAN}======================================${NC}"
+ echo -e "${CYAN} 网络配置备份/恢复 ${NC}"
+ echo -e "${CYAN}======================================${NC}"
+ BACKUP_DIR="/root/wifi_backup"
+ echo "1. 备份网络配置"
+ echo "2. 恢复网络配置"
+ echo "3. 查看已有备份"
+ echo "0. 返回"
+ read -p "选项: " br_choice
+ case $br_choice in
+ 1)
+ mkdir -p "$BACKUP_DIR"
+ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+ BACKUP_FILE="$BACKUP_DIR/wifi_config_$TIMESTAMP.tar.gz"
+ echo -e "${YELLOW}正在备份...${NC}"
+ CONN_DIR="/etc/NetworkManager/system-connections"
+ if [ -d "$CONN_DIR" ]; then
+ tar czf "$BACKUP_FILE" "$CONN_DIR" 2>/dev/null
+ nmcli -t -f NAME,TYPE,DEVICE connection show > "$BACKUP_DIR/conn_list_$TIMESTAMP.txt" 2>/dev/null
+ SIZE=$(ls -la "$BACKUP_FILE" 2>/dev/null | awk '{print $5}')
+ echo -e "${GREEN}✅ 备份成功${NC}"
+ echo -e "文件: $BACKUP_FILE (${SIZE} bytes)"
+ else
+ echo -e "${RED}❌ 未找到 NetworkManager 配置目录${NC}"
+ fi
+ read -n 1 -s -r -p "按任意键返回..."
+ ;;
+ 2)
+ if [ ! -d "$BACKUP_DIR" ]; then
+ echo -e "${RED}❌ 无备份目录${NC}"; read -n 1 -s -r -p "按任意键返回..."; return
+ fi
+ echo -e "${CYAN}可用备份:${NC}"
+ ls -1 "$BACKUP_DIR"/*.tar.gz 2>/dev/null | while read f; do
+ echo "  $(basename "$f")  ($(ls -la "$f" | awk '{print $5}') bytes)"
+ done
+ echo "--------------------------------------"
+ read -p "输入备份文件名(回车返回): " restore_name
+ [ -z "$restore_name" ] && return
+ RESTORE_FILE="$BACKUP_DIR/$restore_name"
+ if [ ! -f "$RESTORE_FILE" ]; then
+ echo -e "${RED}❌ 文件不存在${NC}"; sleep 2; return
+ fi
+ echo -e "${YELLOW}警告: 将覆盖当前网络配置！${NC}"
+ read -p "确认恢复? (y/n): " confirm
+ [[ "$confirm" != "y" && "$confirm" != "Y" ]] && return
+ tar xzf "$RESTORE_FILE" -C / 2>/dev/null
+ systemctl restart NetworkManager 2>/dev/null
+ sleep 5
+ echo -e "${GREEN}✅ 恢复完成，NetworkManager 已重启${NC}"
+ nmcli -t -f NAME,TYPE,DEVICE connection show
+ read -n 1 -s -r -p "按任意键返回..."
+ ;;
+ 3)
+ if [ ! -d "$BACKUP_DIR" ] || [ -z "$(ls "$BACKUP_DIR"/*.tar.gz 2>/dev/null)" ]; then
+ echo -e "${YELLOW}暂无备份${NC}"; read -n 1 -s -r -p "按任意键返回..."; return
+ fi
+ echo -e "${CYAN}已有备份:${NC}"
+ echo "--------------------------------------"
+ ls -1 "$BACKUP_DIR"/*.tar.gz 2>/dev/null | while read f; do
+ echo -e "  ${GREEN}$(basename "$f")${NC}  $(ls -la "$f" | awk '{print $5}')B"
+ done
+ echo "--------------------------------------"
+ read -n 1 -s -r -p "按任意键返回..."
+ ;;
+ 0) return ;;
+ *) echo -e "${RED}无效${NC}"; sleep 1 ;;
+ esac
+}
+
+ipv6_panel() {
+ clear
+ echo -e "${CYAN}======================================${NC}"
+ echo -e "${CYAN} IPv6 详细面板 ${NC}"
+ echo -e "${CYAN}======================================${NC}"
+ WIFI_IF=$(get_wifi_iface)
+ echo -e "${YELLOW}正在检测 IPv6 状态...${NC}"
+ echo "--------------------------------------"
+ echo -e "${CYAN}【接口信息】${NC}"
+ echo -e "  接口: ${GREEN}$WIFI_IF${NC}"
+ echo -n "  IPv6 地址:"
+ IPV6_ADDRS=$(ip -6 addr show dev "$WIFI_IF" 2>/dev/null | grep "scope global" | awk '{print $2}')
+ if [ -n "$IPV6_ADDRS" ]; then
+ echo ""
+ echo "$IPV6_ADDRS" | while read addr; do
+ echo -e "    ${GREEN}$addr${NC}"
+ done
+ else
+ echo -e "  ${RED}无${NC}"
+ fi
+ IPV6_PREFIX=$(echo "$IPV6_ADDRS" | head -1)
+ if [ -n "$IPV6_PREFIX" ]; then
+ echo -e "  前缀长度: ${GREEN}/$(echo "$IPV6_PREFIX" | cut -d/ -f2)${NC}"
+ fi
+ IPV6_GW=$(ip -6 route 2>/dev/null | awk '/default/ {print $3}' | head -1)
+ echo -n "  IPv6 网关: "
+ [ -n "$IPV6_GW" ] && echo -e "${GREEN}$IPV6_GW${NC}" || echo -e "${RED}无${NC}"
+ IPV6_DNS=$(grep -E "nameserver" /etc/resolv.conf 2>/dev/null | grep ":" | awk '{print $2}' | head -1)
+ echo -n "  IPv6 DNS:  "
+ [ -n "$IPV6_DNS" ] && echo -e "${GREEN}$IPV6_DNS${NC}" || echo -e "${YELLOW}无(仅IPv4 DNS)${NC}"
+ RA_STATE=$(cat /proc/sys/net/ipv6/conf/$WIFI_IF/accept_ra 2>/dev/null)
+ echo -n "  接收RA:    "
+ case "$RA_STATE" in
+ 0) echo -e "${RED}关闭${NC}" ;;
+ 1) echo -e "${GREEN}开启${NC}" ;;
+ 2) echo -e "${GREEN}开启(转发模式)${NC}" ;;
+ *) echo -e "${YELLOW}未知($RA_STATE)${NC}" ;;
+ esac
+ IPV6_DISABLE=$(cat /proc/sys/net/ipv6/conf/$WIFI_IF/disable_ipv6 2>/dev/null)
+ echo -n "  IPv6启用:  "
+ [ "$IPV6_DISABLE" = "0" ] && echo -e "${GREEN}是${NC}" || echo -e "${RED}否${NC}"
+ echo "--------------------------------------"
+ echo -e "${CYAN}【连通性测试】${NC}"
+ echo -n "  网关连通:  "
+ if [ -n "$IPV6_GW" ]; then
+ ping6 -c 2 -W 2 "$IPV6_GW" >/dev/null 2>&1 && echo -e "${GREEN}通${NC}" || echo -e "${RED}不通${NC}"
+ else
+ echo -e "${YELLOW}无网关${NC}"
+ fi
+ echo -n "  国内(taobao): "
+ curl -6 -s --connect-timeout 3 -o /dev/null -w "%{http_code}" https://www.taobao.com 2>/dev/null | grep -q "200\|301\|302" && echo -e "${GREEN}通${NC}" || echo -e "${RED}不通${NC}"
+ echo -n "  公网IPv6:  "
+ PUB6=$(curl -6 -s --connect-timeout 3 https://api64.ipify.org 2>/dev/null)
+ [ -n "$PUB6" ] && echo -e "${GREEN}$PUB6${NC}" || echo -e "${RED}获取失败${NC}"
+ echo "--------------------------------------"
+ echo -e "${CYAN}【地址配置方式】${NC}"
+ if echo "$IPV6_ADDRS" | grep -qP ":[0-9a-f:]+/(64|48|56)$"; then
+ echo -e "  方式: ${GREEN}SLAAC (无状态自动配置)${NC}"
+ elif [ -n "$IPV6_ADDRS" ]; then
+ echo -e "  方式: ${YELLOW}DHCPv6 或手动配置${NC}"
+ else
+ echo -e "  方式: ${RED}未配置${NC}"
+ fi
+ echo -e "${CYAN}======================================${NC}"
+ read -n 1 -s -r -p "按任意键返回..."
+}
+
 while true; do
  clear
  echo -e "${CYAN}=================================================${NC}"
@@ -522,11 +776,16 @@ while true; do
  echo " 8. 网络测速"
  echo " 9. 网络体检 (含IPv6检测)"
  echo -e " 10. ${GREEN}在线更新${NC} (当前 v${VERSION})"
+ echo -e "${CYAN}--- v1.9.1 新增 ---${NC}"
+ echo " 11. DNS 测速优化"
+ echo " 12. WiFi 信道分析"
+ echo " 13. 配置备份/恢复"
+ echo " 14. IPv6 详细面板"
  echo " 0. 退出"
  echo -e "${CYAN}-------------------------------------------------${NC}"
- echo -e " 💡 终端输入 ${GREEN}wifi${NC} 快速打开 | v1.9.0 改进: 省电关闭+4级恢复+驱动重载"
+ echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v1.9.1 新增: DNS优化+信道分析+备份+IPv6面板"
  echo -e "${CYAN}=================================================${NC}"
- read -p "选项 [0-10]: " choice
+ read -p "选项 [0-14]: " choice
  case $choice in
  1) install_driver ;;
  2) connect_wifi ;;
@@ -538,6 +797,10 @@ while true; do
  8) run_speedtest ;;
  9) network_diagnose ;;
  10) update_script ;;
+ 11) dns_optimize ;;
+ 12) channel_analysis ;;
+ 13) backup_restore ;;
+ 14) ipv6_panel ;;
  0) clear; echo "已退出。"; exit 0 ;;
  *) echo -e "${RED}无效${NC}"; sleep 1 ;;
  esac
