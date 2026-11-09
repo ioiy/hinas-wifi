@@ -3,10 +3,10 @@
 # ==========================================
 # HiNAS WiFi 控制面板 (终极进化版)
 # 项目地址: https://github.com/ioiy/hinas-wifi
-# v1.9.4: 修复 disable_ps 反复 poke 驱动导致频繁断线 + 增强原因归类
+# v1.9.5: 9项优化 — detect_conn fallback + USB autosuspend + bgscan + keepalive + L4就绪 + 恢复后关省电 + OK日志 + 备份修复 + 测速
 # ==========================================
 
-VERSION="1.9.4"
+VERSION="1.9.5"
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 WATCHDOG_SCRIPT="/usr/local/bin/wifi_watchdog.sh"
 KEEPALIVE_SCRIPT="/usr/local/bin/wifi_keepalive.sh"
@@ -45,6 +45,10 @@ get_wifi_conn() {
     local CONN
     CONN=$(nmcli -t -f DEVICE,CONNECTION device status 2>/dev/null | grep "^${IF}:" | cut -d: -f2)
     [ -z "$CONN" ] || [ "$CONN" == "--" ] && CONN=""
+    # v1.9.5: 设备断开时从已保存的 WiFi 连接里找
+    if [ -z "$CONN" ]; then
+        CONN=$(nmcli -t -f NAME,TYPE connection show 2>/dev/null | grep ":802-11-wireless$" | cut -d: -f1 | head -1)
+    fi
     echo "$CONN"
 }
 
@@ -86,6 +90,8 @@ disable_power_save() {
     # 只写 WiFi 设备对应的 USB power control, 不写所有 USB 设备
     local dev_path="/sys/class/net/${IF}/device/power/control"
     [ -f "$dev_path" ] && echo on > "$dev_path" 2>/dev/null
+    # v1.9.5: 禁用 USB 自动挂起 (防止 USB 子系统挂起 WiFi 适配器)
+    echo -1 > /sys/module/usbcore/parameters/autosuspend 2>/dev/null
 }
 
 check_network() {
@@ -156,10 +162,11 @@ setup_keepalive() {
     local action=$1  # on/off
     cat > "$KEEPALIVE_SCRIPT" << 'KAEOF'
 #!/bin/bash
-# WiFi Keepalive — 每分钟 ping 网关, 保持连接活跃, 防止路由器踢掉空闲客户端
+# WiFi Keepalive v2 — 每分钟 ping 网关3包+外网1包, 保持连接活跃
 GATEWAY=$(ip route 2>/dev/null | awk '/default/ {print $3}' | head -1)
 [ -z "$GATEWAY" ] && exit 0
-ping -c 1 -W 2 "$GATEWAY" >/dev/null 2>&1
+ping -c 3 -W 2 "$GATEWAY" >/dev/null 2>&1
+ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1
 KAEOF
     chmod +x "$KEEPALIVE_SCRIPT"
     if [ "$action" = "on" ]; then
@@ -172,7 +179,7 @@ KAEOF
 toggle_watchdog() {
     clear
     echo -e "${CYAN}======================================${NC}"
-    echo -e "${CYAN} WiFi 防掉线守护进程 v3.2 ${NC}"
+    echo -e "${CYAN} WiFi 防掉线守护进程 v3.3 ${NC}"
     echo -e "${CYAN}======================================${NC}"
     EXISTING_CRON=$(crontab -l 2>/dev/null | grep "$WATCHDOG_SCRIPT")
     if [ -n "$EXISTING_CRON" ]; then
@@ -231,7 +238,7 @@ toggle_watchdog() {
         echo "正在配置后台守护进程..."
         cat > "$WATCHDOG_SCRIPT" << 'WD1'
 #!/bin/bash
-# WiFi Watchdog v3.2 — 修复 disable_ps 反复 poke 导致断线 + 增强原因归类
+# WiFi Watchdog v3.3 — 9项优化: 条件关省电+detect_conn fallback+bgscan+L4就绪+恢复后关省电+OK日志
 exec 200>/tmp/wifi_watchdog.lock
 flock -n 200 || exit 0
 
@@ -255,6 +262,10 @@ detect_conn() {
     local IF; IF=$(detect_iface)
     local CONN; CONN=$(nmcli -t -f DEVICE,CONNECTION device status 2>/dev/null | grep "^${IF}:" | cut -d: -f2)
     [ -z "$CONN" ] || [ "$CONN" = "--" ] && CONN=""
+    # v3.3: 设备断开时从已保存的 WiFi 连接里找
+    if [ -z "$CONN" ]; then
+        CONN=$(nmcli -t -f NAME,TYPE connection show 2>/dev/null | grep ":802-11-wireless$" | cut -d: -f1 | head -1)
+    fi
     echo "$CONN"
 }
 
@@ -299,6 +310,8 @@ disable_ps() {
     [ -n "$CONN" ] && nmcli con mod "$CONN" 802-11-wireless.powersave 2 2>/dev/null
     local dp="/sys/class/net/${IF}/device/power/control"
     [ -f "$dp" ] && echo on > "$dp" 2>/dev/null
+    # v3.3: 禁用 USB 自动挂起
+    echo -1 > /sys/module/usbcore/parameters/autosuspend 2>/dev/null
 }
 
 check_associated() { [ -n "$(iw dev "$1" link 2>/dev/null | grep 'Connected to')" ]; }
@@ -384,13 +397,33 @@ recover_with_patience() {
         log "  L4: 重启 NetworkManager, 等待 ${patience}s..."
         systemctl restart NetworkManager >/dev/null 2>&1; rc=$?
         log "  L4: NM 重启返回 $rc"
-        sleep "$patience"
+        # v3.3: 等 NM 真正就绪, 不死等
+        local waited=0
+        while [ "$waited" -lt "$patience" ]; do
+            systemctl is-active NetworkManager >/dev/null 2>&1 && break
+            sleep 2; waited=$((waited + 2))
+        done
+        sleep 5  # 再等 5 秒让设备枚举完成
         IF=$(detect_iface)
         local CONN; CONN=$(detect_conn)
         [ -n "$CONN" ] && nmcli con up "$CONN" >/dev/null 2>&1
         if check_net; then rc=0; log "  L4: ✅ 网络恢复"; fi ;;
     esac
     return $rc
+}
+
+# v3.3: 恢复成功后的收尾工作
+post_recover() {
+    local IF=$1
+    # 禁用后台扫描 (防止扫描导致再次断线)
+    local CONN; CONN=$(detect_conn)
+    [ -n "$CONN" ] && nmcli con mod "$CONN" wifi.bgscan "" 2>/dev/null
+    # 重新检查省电模式 (NM 重连后可能重置为 on)
+    local PS_NOW; PS_NOW=$(iw dev "$IF" get power_save 2>/dev/null | awk '{print $3}')
+    if [ "$PS_NOW" = "on" ]; then
+        disable_ps "$IF"
+        log "  恢复后省电模式被发现开启, 已关闭"
+    fi
 }
 WD2
         cat >> "$WATCHDOG_SCRIPT" << 'WD3'
@@ -418,12 +451,13 @@ if ! check_associated "$IF"; then
     REASON=$(categorize_reason "$IF")
     log "  断网原因: $REASON"
     for level in 1 2 3 4; do
-        case $level in 1) p=60 ;; 2) p=90 ;; 3) p=120 ;; 4) p=60 ;; esac
+        case $level in 1) p=60 ;; 2) p=90 ;; 3) p=120 ;; 4) p=90 ;; esac
         recover_with_patience "$level" "$p" "$IF"
         if [ $? -eq 0 ]; then
             DUR=$(elapsed_time)
             log "✅ 恢复成功 (L${level}), 耗时 ${DUR}s, 原因: $REASON"
             log_stats "success" "L${level}" "$DUR" "$REASON"
+            post_recover "$IF"
             exit 0
         fi
     done
@@ -440,12 +474,13 @@ if ! check_net; then
     REASON=$(categorize_reason "$IF")
     log "  断网原因: $REASON"
     for level in 1 2 3 4; do
-        case $level in 1) p=60 ;; 2) p=90 ;; 3) p=120 ;; 4) p=60 ;; esac
+        case $level in 1) p=60 ;; 2) p=90 ;; 3) p=120 ;; 4) p=90 ;; esac
         recover_with_patience "$level" "$p" "$IF"
         if [ $? -eq 0 ]; then
             DUR=$(elapsed_time)
             log "✅ 恢复成功 (L${level}), 耗时 ${DUR}s, 原因: $REASON"
             log_stats "success" "L${level}" "$DUR" "$REASON"
+            post_recover "$IF"
             exit 0
         fi
     done
@@ -456,13 +491,20 @@ if ! check_net; then
     exit 1
 fi
 
-# 网络正常, 静默退出
+# v3.3: 网络正常, 每30次巡逻记一条OK日志
+OK_COUNT_FILE="/tmp/wifi_wd_ok_count"
+OK_COUNT=$(cat "$OK_COUNT_FILE" 2>/dev/null || echo 0)
+OK_COUNT=$((OK_COUNT + 1))
+echo "$OK_COUNT" > "$OK_COUNT_FILE"
+if [ $((OK_COUNT % 30)) -eq 0 ]; then
+    log "✅ 网络正常 (第${OK_COUNT}次巡逻) 信号=${SIG}dBm"
+fi
 exit 0
 WD3
         chmod +x "$WATCHDOG_SCRIPT"
         (crontab -l 2>/dev/null | grep -v "$WATCHDOG_SCRIPT"; echo "$CRON_JOB") | crontab -
         echo -e "${GREEN}✅ 自动重连已开启 (每 $interval 分钟检测)${NC}"
-        echo -e "${YELLOW}watchdog v3.2: 条件关省电(不poke驱动) | 耐心恢复 | 增强原因归类 | 统计数据${NC}"
+        echo -e "${YELLOW}watchdog v3.3: 条件关省电+detect_conn fallback+bgscan+L4就绪+OK日志${NC}"
         sleep 3
         ;;
     2)
@@ -658,13 +700,21 @@ run_speedtest() {
     echo -e "${CYAN}======================================${NC}"
     echo -e "${CYAN} 网络测速 ${NC}"
     echo -e "${CYAN}======================================${NC}"
-    if command -v python3 >/dev/null 2>&1; then
-        wget -qO- https://ghfast.top/https://raw.githubusercontent.com/sivel/speedtest-cli/master/speedtest.py | python3 -u -
-    elif command -v python >/dev/null 2>&1; then
-        wget -qO- https://ghfast.top/https://raw.githubusercontent.com/sivel/speedtest-cli/master/speedtest.py | python -u -
+    echo -e "${YELLOW}下载测速 (100MB)...${NC}"
+    echo "--------------------------------------"
+    local speed
+    speed=$(curl -o /dev/null -s -w "%{speed_download}" --connect-timeout 10 --max-time 60 \
+        http://speedtest.tele2.net/100MB.zip 2>/dev/null)
+    if [ -n "$speed" ] && [ "$speed" != "0" ]; then
+        local mbps
+        mbps=$(echo "scale=2; $speed / 125000" | bc 2>/dev/null || echo "N/A")
+        echo -e "下载速度: ${GREEN}${mbps} Mbps${NC}"
+        echo -e "原始速度: ${CYAN}${speed} bytes/s${NC}"
     else
-        wget -O /dev/null http://speedtest.tele2.net/10MB.zip --show-progress
+        echo -e "${RED}❌ 测速失败, 尝试备用 (10MB)...${NC}"
+        wget -O /dev/null http://speedtest.tele2.net/10MB.zip --show-progress 2>/dev/null
     fi
+    echo "--------------------------------------"
     read -n 1 -s -r -p "按任意键返回..."
 }
 
@@ -751,6 +801,9 @@ connect_wifi() {
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✅ 成功${NC}"
         disable_power_save  # 连接成功后关省电
+        # v1.9.5: 禁用后台扫描 (防止扫描时短暂断线)
+        local CONN_TMP; CONN_TMP=$(get_wifi_conn)
+        [ -n "$CONN_TMP" ] && nmcli con mod "$CONN_TMP" wifi.bgscan "" 2>/dev/null
     else
         echo -e "${RED}❌ 失败${NC}"
     fi
@@ -893,11 +946,13 @@ backup_restore() {
         if [ -d "$CONN_DIR" ]; then
             # 备份 NM 配置 + watchdog/keepalive 脚本 + crontab
             crontab -l 2>/dev/null > /tmp/wifi_crontab_backup.txt
-            tar czf "$BACKUP_FILE" "$CONN_DIR" \
+            # v1.9.5: 先创建未压缩 tar, 追加后再 gzip (tar rf 不支持压缩文件)
+            local TMP_TAR="${BACKUP_FILE%.tar.gz}.tar"
+            tar cf "$TMP_TAR" "$CONN_DIR" \
                 /tmp/wifi_crontab_backup.txt 2>/dev/null
-            [ -f "$WATCHDOG_SCRIPT" ] && tar rf "$BACKUP_FILE" "$WATCHDOG_SCRIPT" 2>/dev/null
-            [ -f "$KEEPALIVE_SCRIPT" ] && tar rf "$BACKUP_FILE" "$KEEPALIVE_SCRIPT" 2>/dev/null
-            # tar 不支持追加压缩文件, 重新压缩
+            [ -f "$WATCHDOG_SCRIPT" ] && tar rf "$TMP_TAR" "$WATCHDOG_SCRIPT" 2>/dev/null
+            [ -f "$KEEPALIVE_SCRIPT" ] && tar rf "$TMP_TAR" "$KEEPALIVE_SCRIPT" 2>/dev/null
+            gzip "$TMP_TAR" 2>/dev/null && mv "${TMP_TAR}.gz" "$BACKUP_FILE" 2>/dev/null
             nmcli -t -f NAME,TYPE,DEVICE connection show > "$BACKUP_DIR/conn_list_$TIMESTAMP.txt" 2>/dev/null
             SIZE=$(ls -la "$BACKUP_FILE" 2>/dev/null | awk '{print $5}')
             echo -e "${GREEN}✅ 备份成功${NC}"
@@ -1130,7 +1185,7 @@ while true; do
     echo -e "${CYAN}=================================================${NC}"
     echo " 1. 安装 WIFI 驱动 (RTL8188等)"
     echo " 2. 扫描并连接 WIFI"
-    echo -e " 3. 防掉线守护 ${GREEN}(watchdog v3.2 + 保活)${NC}"
+    echo -e " 3. 防掉线守护 ${GREEN}(watchdog v3.3 + 保活)${NC}"
     echo -e " 4. 网络信息与体检 ${GREEN}(含信号强度)${NC}"
     echo " 5. 配置静态/动态 IP"
     echo " 6. WiFi 热点 (AP模式)"
@@ -1144,7 +1199,7 @@ while true; do
     echo -e "14. ${GREEN}断网统计面板${NC} (新增)"
     echo " 0. 退出"
     echo -e "${CYAN}-------------------------------------------------${NC}"
-    echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v1.9.4: 修复频繁断线+增强原因归类"
+    echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v1.9.5: 9项优化"
     echo -e "${CYAN}=================================================${NC}"
     read -p "选项 [0-14]: " choice
     case $choice in
