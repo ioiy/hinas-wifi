@@ -3,7 +3,7 @@
 # ==========================================
 # HiNAS WiFi 控制面板 (终极进化版)
 # 项目地址: https://github.com/ioiy/hinas-wifi
-# v1.9.3: 全面优化 — 去重+修复+保活+信号+统计
+# v1.9.4: 修复 disable_ps 反复 poke 驱动导致频繁断线 + 增强原因归类
 # ==========================================
 
 VERSION="1.9.3"
@@ -172,7 +172,7 @@ KAEOF
 toggle_watchdog() {
     clear
     echo -e "${CYAN}======================================${NC}"
-    echo -e "${CYAN} WiFi 防掉线守护进程 v3.1 ${NC}"
+    echo -e "${CYAN} WiFi 防掉线守护进程 v3.2 ${NC}"
     echo -e "${CYAN}======================================${NC}"
     EXISTING_CRON=$(crontab -l 2>/dev/null | grep "$WATCHDOG_SCRIPT")
     if [ -n "$EXISTING_CRON" ]; then
@@ -231,7 +231,7 @@ toggle_watchdog() {
         echo "正在配置后台守护进程..."
         cat > "$WATCHDOG_SCRIPT" << 'WD1'
 #!/bin/bash
-# WiFi Watchdog v3.1 — 增强日志 + 安全恢复 + 信号记录 + 断网原因归类
+# WiFi Watchdog v3.2 — 修复 disable_ps 反复 poke 导致断线 + 增强原因归类
 exec 200>/tmp/wifi_watchdog.lock
 flock -n 200 || exit 0
 
@@ -262,8 +262,14 @@ get_signal() { iw dev "$1" link 2>/dev/null | grep -oP 'signal: \K[-0-9]+'; }
 
 categorize_reason() {
     local IF=$1 reason="unknown" recent_dmesg
-    recent_dmesg=$(dmesg 2>&1 | tail -20)
-    if echo "$recent_dmesg" | grep -qiE "deauth|disassoc"; then
+    recent_dmesg=$(dmesg 2>&1 | tail -50)
+    local nm_log
+    nm_log=$(journalctl -u NetworkManager --since "3 min ago" --no-pager 2>/dev/null)
+    if echo "$nm_log" | grep -qiE "rekey|group.*key|GTK|4-way"; then
+        reason="gtk_rekey_fail"
+    elif echo "$nm_log" | grep -qiE "dhcp.*fail|lease.*expired|dhcp4.*timeout"; then
+        reason="dhcp_fail"
+    elif echo "$recent_dmesg" | grep -qiE "deauth|disassoc"; then
         reason="deauth"
     elif echo "$recent_dmesg" | grep -qiE "firmware|rtl8188.*error|.*fail.*rtl"; then
         reason="driver_error"
@@ -399,7 +405,12 @@ if [ -n "$SIG" ]; then
 else
     log "检测开始 — IF=$IF CONN=$CONN 信号=无"
 fi
-disable_ps "$IF"
+# v3.2: 只在省电模式确实开着时才关, 不再每次 poke 驱动
+PS_NOW=$(iw dev "$IF" get power_save 2>/dev/null | awk '{print $3}')
+if [ "$PS_NOW" = "on" ]; then
+    log "  省电模式被发现开启, 正在关闭..."
+    disable_ps "$IF"
+fi
 
 if ! check_associated "$IF"; then
     log "⚠ WiFi 未关联到任何 AP"
@@ -451,7 +462,7 @@ WD3
         chmod +x "$WATCHDOG_SCRIPT"
         (crontab -l 2>/dev/null | grep -v "$WATCHDOG_SCRIPT"; echo "$CRON_JOB") | crontab -
         echo -e "${GREEN}✅ 自动重连已开启 (每 $interval 分钟检测)${NC}"
-        echo -e "${YELLOW}watchdog v3.1: 耐心恢复(5.5分钟) | 安全ip link | 信号记录 | 断网归类 | 统计数据${NC}"
+        echo -e "${YELLOW}watchdog v3.2: 条件关省电(不poke驱动) | 耐心恢复 | 增强原因归类 | 统计数据${NC}"
         sleep 3
         ;;
     2)
@@ -1119,7 +1130,7 @@ while true; do
     echo -e "${CYAN}=================================================${NC}"
     echo " 1. 安装 WIFI 驱动 (RTL8188等)"
     echo " 2. 扫描并连接 WIFI"
-    echo -e " 3. 防掉线守护 ${GREEN}(watchdog v3.1 + 保活)${NC}"
+    echo -e " 3. 防掉线守护 ${GREEN}(watchdog v3.2 + 保活)${NC}"
     echo -e " 4. 网络信息与体检 ${GREEN}(含信号强度)${NC}"
     echo " 5. 配置静态/动态 IP"
     echo " 6. WiFi 热点 (AP模式)"
@@ -1133,7 +1144,7 @@ while true; do
     echo -e "14. ${GREEN}断网统计面板${NC} (新增)"
     echo " 0. 退出"
     echo -e "${CYAN}-------------------------------------------------${NC}"
-    echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v1.9.3: 去重+修复+保活+信号+统计"
+    echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v1.9.4: 修复频繁断线+增强原因归类"
     echo -e "${CYAN}=================================================${NC}"
     read -p "选项 [0-14]: " choice
     case $choice in
