@@ -6,7 +6,7 @@
 # v1.9.5: 9项优化 — detect_conn fallback + USB autosuspend + bgscan + keepalive + L4就绪 + 恢复后关省电 + OK日志 + 备份修复 + 测速
 # ==========================================
 
-VERSION="1.9.5"
+VERSION="1.9.6"
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 WATCHDOG_SCRIPT="/usr/local/bin/wifi_watchdog.sh"
 KEEPALIVE_SCRIPT="/usr/local/bin/wifi_keepalive.sh"
@@ -238,7 +238,7 @@ toggle_watchdog() {
         echo "正在配置后台守护进程..."
         cat > "$WATCHDOG_SCRIPT" << 'WD1'
 #!/bin/bash
-# WiFi Watchdog v3.3 — 9项优化: 条件关省电+detect_conn fallback+bgscan+L4就绪+恢复后关省电+OK日志
+# WiFi Watchdog v3.4 — 修复 iw link 误判导致 watchdog 杀死正常连接 + grep 误匹配
 exec 200>/tmp/wifi_watchdog.lock
 flock -n 200 || exit 0
 
@@ -276,7 +276,7 @@ categorize_reason() {
     recent_dmesg=$(dmesg 2>&1 | tail -50)
     local nm_log
     nm_log=$(journalctl -u NetworkManager --since "3 min ago" --no-pager 2>/dev/null)
-    if echo "$nm_log" | grep -qiE "rekey|group.*key|GTK|4-way"; then
+    if echo "$nm_log" | grep -qiE "rekey.*fail|GTK.*fail|group.*key.*fail|group.*rekey.*timeout"; then
         reason="gtk_rekey_fail"
     elif echo "$nm_log" | grep -qiE "dhcp.*fail|lease.*expired|dhcp4.*timeout"; then
         reason="dhcp_fail"
@@ -446,26 +446,33 @@ if [ "$PS_NOW" = "on" ]; then
 fi
 
 if ! check_associated "$IF"; then
-    log "⚠ WiFi 未关联到任何 AP"
-    start_timer
-    REASON=$(categorize_reason "$IF")
-    log "  断网原因: $REASON"
-    for level in 1 2 3 4; do
-        case $level in 1) p=60 ;; 2) p=90 ;; 3) p=120 ;; 4) p=90 ;; esac
-        recover_with_patience "$level" "$p" "$IF"
-        if [ $? -eq 0 ]; then
-            DUR=$(elapsed_time)
-            log "✅ 恢复成功 (L${level}), 耗时 ${DUR}s, 原因: $REASON"
-            log_stats "success" "L${level}" "$DUR" "$REASON"
-            post_recover "$IF"
-            exit 0
-        fi
-    done
-    DUR=$(elapsed_time)
-    log "❌ 全部恢复失败, 耗时 ${DUR}s, 原因: $REASON"
-    log_stats "fail" "L4" "$DUR" "$REASON"
-    capture_snapshot "recovery_failed" "$IF"
-    exit 1
+    # v3.4: iw dev link 在 RTL8188 上不可靠, 可能返回空但实际在线
+    # 先 ping 网关验证: ping 通 = iw 误判, 跳过恢复
+    local GW; GW=$(ip route 2>/dev/null | awk '/default/ {print $3}' | head -1)
+    if [ -n "$GW" ] && ping -c 1 -W 2 "$GW" >/dev/null 2>&1; then
+        log "iw link 不可靠但网关可达($GW), 跳过 (RTL8188 驱动 bug)"
+    else
+        log "⚠ WiFi 未关联到任何 AP"
+        start_timer
+        REASON=$(categorize_reason "$IF")
+        log "  断网原因: $REASON"
+        for level in 1 2 3 4; do
+            case $level in 1) p=60 ;; 2) p=90 ;; 3) p=120 ;; 4) p=90 ;; esac
+            recover_with_patience "$level" "$p" "$IF"
+            if [ $? -eq 0 ]; then
+                DUR=$(elapsed_time)
+                log "✅ 恢复成功 (L${level}), 耗时 ${DUR}s, 原因: $REASON"
+                log_stats "success" "L${level}" "$DUR" "$REASON"
+                post_recover "$IF"
+                exit 0
+            fi
+        done
+        DUR=$(elapsed_time)
+        log "❌ 全部恢复失败, 耗时 ${DUR}s, 原因: $REASON"
+        log_stats "fail" "L4" "$DUR" "$REASON"
+        capture_snapshot "recovery_failed" "$IF"
+        exit 1
+    fi
 fi
 
 if ! check_net; then
@@ -504,7 +511,7 @@ WD3
         chmod +x "$WATCHDOG_SCRIPT"
         (crontab -l 2>/dev/null | grep -v "$WATCHDOG_SCRIPT"; echo "$CRON_JOB") | crontab -
         echo -e "${GREEN}✅ 自动重连已开启 (每 $interval 分钟检测)${NC}"
-        echo -e "${YELLOW}watchdog v3.3: 条件关省电+detect_conn fallback+bgscan+L4就绪+OK日志${NC}"
+        echo -e "${YELLOW}watchdog v3.4: iw link 误判修复+grep 误匹配修复${NC}"
         sleep 3
         ;;
     2)
