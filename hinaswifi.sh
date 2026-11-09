@@ -6,7 +6,7 @@
 # v1.9.4: 修复 disable_ps 反复 poke 驱动导致频繁断线 + 增强原因归类
 # ==========================================
 
-VERSION="1.9.3"
+VERSION="1.9.4"
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 WATCHDOG_SCRIPT="/usr/local/bin/wifi_watchdog.sh"
 KEEPALIVE_SCRIPT="/usr/local/bin/wifi_keepalive.sh"
