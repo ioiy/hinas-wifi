@@ -185,7 +185,7 @@ toggle_watchdog() {
     local PS_STATE
     PS_STATE=$(iw dev "$IF" get power_save 2>/dev/null | awk '{print $3}')
     if [ "$PS_STATE" = "on" ]; then
-        echo -e "省电模式: ${RED}开启 (可能导致断网！)${NC}"
+        echo -e "省电模式: ${RED}开启 (可能导致断网! 菜单15关闭)${NC}"
     else
         echo -e "省电模式: ${GREEN}已关闭${NC}"
     fi
@@ -213,10 +213,10 @@ toggle_watchdog() {
     read -p "请输入选项: " wd_choice
     case $wd_choice in
     1)
-        read -p "请输入检测间隔(分钟，回车默认2分钟): " interval
+        read -p "请输入检测间隔(分钟，回车默认1分钟): " interval
         if ! [[ "$interval" =~ ^[1-9][0-9]*$ ]]; then
-            interval=2
-            echo -e "${YELLOW}使用默认间隔: 2 分钟${NC}"
+            interval=1
+            echo -e "${YELLOW}使用默认间隔: 1 分钟 (ping-only 开销极低)${NC}"
         fi
         CRON_JOB="*/$interval * * * * $WATCHDOG_SCRIPT"
         echo "正在配置后台守护进程..."
@@ -398,12 +398,8 @@ WD2
 
 # ========== 主循环 (v3.5: ping-only, 正常时不碰驱动) ==========
 rotate_log
-
-# --- 第一步: 只用 ping 检测, 绝不碰 iw/驱动 ---
 GW=$(ip route 2>/dev/null | awk '/default/ {print $3}' | head -1)
-
 if [ -n "$GW" ] && ping -c 2 -W 3 "$GW" >/dev/null 2>&1; then
-    # 网关可达, 网络正常, 直接退出, 不跑任何 iw 命令
     OK_COUNT_FILE="/tmp/wifi_wd_ok_count"
     OK_COUNT=$(cat "$OK_COUNT_FILE" 2>/dev/null || echo 0)
     OK_COUNT=$((OK_COUNT + 1))
@@ -413,13 +409,9 @@ if [ -n "$GW" ] && ping -c 2 -W 3 "$GW" >/dev/null 2>&1; then
     fi
     exit 0
 fi
-
-# 网关不通, 再试外网 (可能网关禁 ping 但网络实际正常)
 if ping -c 2 -W 3 223.5.5.5 >/dev/null 2>&1 || ping -c 2 -W 3 119.29.29.29 >/dev/null 2>&1; then
     exit 0
 fi
-
-# --- 到这里说明真断了, 才开始用 iw/nmcli 诊断和恢复 ---
 IF=$(detect_iface)
 CONN=$(detect_conn)
 SIG=$(get_signal "$IF")
@@ -428,13 +420,9 @@ if [ -n "$SIG" ]; then
 else
     log "⚠ 检测到断网 — IF=$IF CONN=$CONN 信号=无"
 fi
-
-
-
 start_timer
 REASON=$(categorize_reason "$IF")
 log "  断网原因: $REASON"
-
 for level in 1 2 3 4; do
     case $level in 1) p=60 ;; 2) p=90 ;; 3) p=120 ;; 4) p=90 ;; esac
     recover_with_patience "$level" "$p" "$IF"
@@ -446,7 +434,6 @@ for level in 1 2 3 4; do
         exit 0
     fi
 done
-
 DUR=$(elapsed_time)
 log "❌ 全部恢复失败, 耗时 ${DUR}s, 原因: $REASON"
 log_stats "fail" "L4" "$DUR" "$REASON"
@@ -1035,7 +1022,7 @@ ipv6_panel() {
 watchdog_stats() {
     clear
     echo -e "${CYAN}======================================${NC}"
-    echo -e "${CYAN} 断网统计面板 ${NC}"
+    echo -e "${CYAN} 断网统计面板 v1.9.8 ${NC}"
     echo -e "${CYAN}======================================${NC}"
 
     local STATS_FILE="/var/log/wifi_watchdog.stats"
@@ -1085,12 +1072,41 @@ watchdog_stats() {
         [ "$total" -gt 0 ] && success_rate=$((success * 100 / total))
         [ "$total" -gt 0 ] && avg_dur=$((total_dur / total))
 
+        local first_ts last_ts
+        first_ts=$(head -1 "$STATS_FILE" | cut -d'|' -f1)
+        last_ts=$(tail -1 "$STATS_FILE" | cut -d'|' -f1)
+        echo -e "  数据区间: ${first_ts} ~ ${last_ts}"
+        echo "--------------------------------------"
         echo -e "${CYAN}【最近 24 小时统计】${NC}"
         echo "--------------------------------------"
         echo -e "  总断网次数: ${YELLOW}${total}${NC}"
         echo -e "  恢复成功:   ${GREEN}${success}${NC} (${success_rate}%)"
         echo -e "  恢复失败:   ${RED}${fail}${NC}"
         echo -e "  平均耗时:   ${CYAN}${avg_dur}s${NC}"
+
+        local today yesterday today_cnt=0 yest_cnt=0
+        today=$(date '+%Y-%m-%d')
+        yesterday=$(date -d 'yesterday' '+%Y-%m-%d')
+        while IFS='|' read -r ts r l d rea; do
+            case "$ts" in
+                "$today"*)     today_cnt=$((today_cnt + 1)) ;;
+                "$yesterday"*) yest_cnt=$((yest_cnt + 1)) ;;
+            esac
+        done < "$STATS_FILE"
+        echo ""
+        echo -e "${CYAN}【今日 vs 昨日】${NC}"
+        if [ "$yest_cnt" -gt 0 ]; then
+            local trend=$((today_cnt - yest_cnt))
+            if [ "$trend" -lt 0 ]; then
+                echo -e "  昨日: ${yest_cnt}次 → 今日: ${GREEN}${today_cnt}次${NC} (↓${trend#-} 🎉)"
+            elif [ "$trend" -gt 0 ]; then
+                echo -e "  昨日: ${yest_cnt}次 → 今日: ${RED}${today_cnt}次${NC} (↑${trend} ⚠)"
+            else
+                echo -e "  昨日: ${yest_cnt}次 → 今日: ${today_cnt}次 (持平)"
+            fi
+        else
+            echo -e "  昨日: 0次 → 今日: ${today_cnt}次"
+        fi
         echo ""
         echo -e "${CYAN}【断网原因分布】${NC}"
         for reason in "${!reason_count[@]}"; do
@@ -1131,7 +1147,7 @@ watchdog_stats() {
 }
 
 
-# --- 省电模式开关 ---
+# --- 省电模式开关 (用户自行控制) ---
 toggle_power_save() {
     clear
     echo -e "${CYAN}======================================${NC}"
