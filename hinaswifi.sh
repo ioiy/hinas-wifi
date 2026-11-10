@@ -6,7 +6,7 @@
 # v1.9.7: watchdog v3.5 ping-only 监控 — 正常时只 ping 不碰驱动, 解决 RTL8188FU 频繁断线
 # ==========================================
 
-VERSION="1.9.7"
+VERSION="1.9.8"
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 WATCHDOG_SCRIPT="/usr/local/bin/wifi_watchdog.sh"
 KEEPALIVE_SCRIPT="/usr/local/bin/wifi_keepalive.sh"
@@ -77,22 +77,6 @@ validate_ip() {
     fi
 }
 
-# --- 省电关闭 (统一: 只写 WiFi 设备 sysfs, 不碰所有 USB) ---
-disable_power_save() {
-    local IF
-    IF=$(get_wifi_iface)
-    iw dev "$IF" set power_save off 2>/dev/null
-    local CONN
-    CONN=$(get_wifi_conn)
-    if [ -n "$CONN" ]; then
-        nmcli con mod "$CONN" 802-11-wireless.powersave 2 2>/dev/null
-    fi
-    # 只写 WiFi 设备对应的 USB power control, 不写所有 USB 设备
-    local dev_path="/sys/class/net/${IF}/device/power/control"
-    [ -f "$dev_path" ] && echo on > "$dev_path" 2>/dev/null
-    # v1.9.5: 禁用 USB 自动挂起 (防止 USB 子系统挂起 WiFi 适配器)
-    echo -1 > /sys/module/usbcore/parameters/autosuspend 2>/dev/null
-}
 
 check_network() {
     local IF
@@ -222,7 +206,7 @@ toggle_watchdog() {
     echo "1. 开启/修改自动重连 (可自定义检测间隔)"
     echo "2. 关闭自动重连"
     echo "3. 查看自动重连日志"
-    echo -e "4. ${GREEN}开启/关闭 连接保活${NC} (防路由器踢空闲)"
+        echo -e "4. ${GREEN}开启/关闭 连接保活${NC} (v3.5下已冗余, 建议关闭)"
     echo -e "5. ${GREEN}查看故障快照${NC} (断网诊断)"
     echo "0. 返回主菜单"
     echo -e "${CYAN}======================================${NC}"
@@ -303,18 +287,7 @@ log_stats() {
     tail -n 500 "$STATS_FILE" > "${STATS_FILE}.tmp" 2>/dev/null && mv "${STATS_FILE}.tmp" "$STATS_FILE"
 }
 
-disable_ps() {
-    local IF=$1
-    iw dev "$IF" set power_save off 2>/dev/null
-    local CONN; CONN=$(detect_conn)
-    [ -n "$CONN" ] && nmcli con mod "$CONN" 802-11-wireless.powersave 2 2>/dev/null
-    local dp="/sys/class/net/${IF}/device/power/control"
-    [ -f "$dp" ] && echo on > "$dp" 2>/dev/null
-    # v3.3: 禁用 USB 自动挂起
-    echo -1 > /sys/module/usbcore/parameters/autosuspend 2>/dev/null
-}
 
-check_associated() { [ -n "$(iw dev "$1" link 2>/dev/null | grep 'Connected to')" ]; }
 check_net() {
     ping -c 2 -W 3 223.5.5.5 >/dev/null 2>&1 && return 0
     ping -c 2 -W 3 119.29.29.29 >/dev/null 2>&1 && return 0
@@ -418,12 +391,7 @@ post_recover() {
     # 禁用后台扫描 (防止扫描导致再次断线)
     local CONN; CONN=$(detect_conn)
     [ -n "$CONN" ] && nmcli con mod "$CONN" wifi.bgscan "" 2>/dev/null
-    # 重新检查省电模式 (NM 重连后可能重置为 on)
-    local PS_NOW; PS_NOW=$(iw dev "$IF" get power_save 2>/dev/null | awk '{print $3}')
-    if [ "$PS_NOW" = "on" ]; then
-        disable_ps "$IF"
-        log "  恢复后省电模式被发现开启, 已关闭"
-    fi
+    # 省电由用户控制, 不自动关
 }
 WD2
         cat >> "$WATCHDOG_SCRIPT" << 'WD3'
@@ -461,12 +429,7 @@ else
     log "⚠ 检测到断网 — IF=$IF CONN=$CONN 信号=无"
 fi
 
-# 只在断线恢复时才关省电, 不在正常巡逻时碰
-PS_NOW=$(iw dev "$IF" get power_save 2>/dev/null | awk '{print $3}')
-if [ "$PS_NOW" = "on" ]; then
-    log "  省电模式被发现开启, 正在关闭..."
-    disable_ps "$IF"
-fi
+
 
 start_timer
 REASON=$(categorize_reason "$IF")
@@ -519,7 +482,8 @@ WD3
             echo -e "${GREEN}✅ 已关闭连接保活${NC}"
         else
             setup_keepalive "on"
-            echo -e "${GREEN}✅ 已开启连接保活 (每分钟 ping 网关, 防路由器踢空闲)${NC}"
+            echo -e "${GREEN}✅ 已开启连接保活${NC}"
+            echo -e "${YELLOW}⚠ v3.5 watchdog 已含 ping, keepalive 冗余, 建议关闭${NC}"
         fi
         sleep 2
         ;;
@@ -600,7 +564,7 @@ show_network_info() {
         echo -e "信号:     ${YELLOW}未获取${NC}"
     fi
     if [ "$PS_STATE" = "on" ]; then
-        echo -e "省电:     ${RED}开启(建议关闭! 菜单3→1开启watchdog自动关)${NC}"
+        echo -e "省电:     ${RED}开启(建议关闭! 菜单15自行关闭)${NC}"
     else
         echo -e "省电:     ${GREEN}已关闭${NC}"
     fi
@@ -789,7 +753,7 @@ connect_wifi() {
     fi
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✅ 成功${NC}"
-        disable_power_save  # 连接成功后关省电
+        # 省电模式由用户通过菜单15自行控制, 不自动关闭
         # v1.9.5: 禁用后台扫描 (防止扫描时短暂断线)
         local CONN_TMP; CONN_TMP=$(get_wifi_conn)
         [ -n "$CONN_TMP" ] && nmcli con mod "$CONN_TMP" wifi.bgscan "" 2>/dev/null
@@ -1166,6 +1130,66 @@ watchdog_stats() {
     read -n 1 -s -r -p "按任意键返回..."
 }
 
+
+# --- 省电模式开关 ---
+toggle_power_save() {
+    clear
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${CYAN} WiFi 省电模式开关 ${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    WIFI_IF=$(get_wifi_iface)
+    CONN=$(get_wifi_conn)
+    PS_STATE=$(iw dev "$WIFI_IF" get power_save 2>/dev/null | awk '{print $3}')
+    NM_PS=$(nmcli -t -f 802-11-wireless.powersave con show "$CONN" 2>/dev/null | cut -d: -f2)
+    USB_CTRL=$(cat /sys/class/net/${WIFI_IF}/device/power/control 2>/dev/null)
+    echo -e "接口: ${GREEN}$WIFI_IF${NC}"
+    echo -e "连接: ${GREEN}${CONN:-无}${NC}"
+    echo "--------------------------------------"
+    echo -e "驱动省电 (iw):      ${PS_STATE:-未知}"
+    echo -e "NM 省电 (nmcli):    ${NM_PS:-未知} (2=关,3=开)"
+    echo -e "USB 挂起控制:       ${USB_CTRL:-未知} (on=不挂起)"
+    echo "--------------------------------------"
+    if [ "$PS_STATE" = "on" ]; then
+        echo -e "综合状态: ${RED}🔴 省电开启 (可能导致断网!)${NC}"
+    else
+        echo -e "综合状态: ${GREEN}🟢 省电已关闭${NC}"
+    fi
+    echo "--------------------------------------"
+    echo "1. ${GREEN}关闭省电${NC} (推荐! 防 RTL8188 休眠断网)"
+    echo "2. 开启省电 (省电但可能频繁断网)"
+    echo "0. 返回"
+    echo -e "${CYAN}======================================${NC}"
+    read -p "选项: " ps_choice
+    case $ps_choice in
+    1)
+        echo -e "${YELLOW}正在关闭省电...${NC}"
+        iw dev "$WIFI_IF" set power_save off 2>/dev/null
+        echo "  ✅ iw set power_save off"
+        if [ -n "$CONN" ]; then
+            nmcli con mod "$CONN" 802-11-wireless.powersave 2 2>/dev/null
+            echo "  ✅ nmcli powersave=2 (持久化)"
+        fi
+        local dp="/sys/class/net/${WIFI_IF}/device/power/control"
+        [ -f "$dp" ] && echo on > "$dp" 2>/dev/null && echo "  ✅ USB power control: on"
+        echo -1 > /sys/module/usbcore/parameters/autosuspend 2>/dev/null && echo "  ✅ USB autosuspend: -1"
+        sleep 1
+        PS_NEW=$(iw dev "$WIFI_IF" get power_save 2>/dev/null | awk '{print $3}')
+        if [ "$PS_NEW" = "off" ] || [ -z "$PS_NEW" ]; then
+            echo -e "\n${GREEN}✅ 省电已关闭!${NC}"
+        else
+            echo -e "\n${YELLOW}⚠ iw 显示 $PS_NEW, 但 NM+USB 层已关${NC}"
+        fi ;;
+    2)
+        echo -e "${YELLOW}正在开启省电...${NC}"
+        iw dev "$WIFI_IF" set power_save on 2>/dev/null
+        [ -n "$CONN" ] && nmcli con mod "$CONN" 802-11-wireless.powersave 3 2>/dev/null
+        echo -e "${GREEN}✅ 省电已开启${NC}"
+        echo -e "${YELLOW}⚠ RTL8188 省电可能导致频繁断网!${NC}" ;;
+    0) return ;;
+    esac
+    read -n 1 -s -r -p "按任意键返回..."
+}
+
 # ========== 主菜单 ==========
 while true; do
     clear
@@ -1185,12 +1209,13 @@ while true; do
     echo "11. DNS 测速优化"
     echo "12. WiFi 信道分析"
     echo "13. 配置备份/恢复"
-    echo -e "14. ${GREEN}断网统计面板${NC} (新增)"
+    echo -e "14. ${GREEN}断网统计面板${NC}"
+    echo -e "15. ${GREEN}省电模式开关${NC} (推荐关闭!)"
     echo " 0. 退出"
     echo -e "${CYAN}-------------------------------------------------${NC}"
     echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v1.9.7: ping-only watchdog"
     echo -e "${CYAN}=================================================${NC}"
-    read -p "选项 [0-14]: " choice
+    read -p "选项 [0-15]: " choice
     case $choice in
         1) install_driver ;;
         2) connect_wifi ;;
@@ -1206,7 +1231,9 @@ while true; do
         12) channel_analysis ;;
         13) backup_restore ;;
         14) watchdog_stats ;;
+        15) toggle_power_save ;;
         0) clear; echo "已退出。"; exit 0 ;;
         *) echo -e "${RED}无效${NC}"; sleep 1 ;;
     esac
 done
+
