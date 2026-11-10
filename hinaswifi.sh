@@ -3,10 +3,10 @@
 # ==========================================
 # HiNAS WiFi 控制面板 (终极进化版)
 # 项目地址: https://github.com/ioiy/hinas-wifi
-# v1.9.5: 9项优化 — detect_conn fallback + USB autosuspend + bgscan + keepalive + L4就绪 + 恢复后关省电 + OK日志 + 备份修复 + 测速
+# v1.9.7: watchdog v3.5 ping-only 监控 — 正常时只 ping 不碰驱动, 解决 RTL8188FU 频繁断线
 # ==========================================
 
-VERSION="1.9.6"
+VERSION="1.9.7"
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 WATCHDOG_SCRIPT="/usr/local/bin/wifi_watchdog.sh"
 KEEPALIVE_SCRIPT="/usr/local/bin/wifi_keepalive.sh"
@@ -179,7 +179,7 @@ KAEOF
 toggle_watchdog() {
     clear
     echo -e "${CYAN}======================================${NC}"
-    echo -e "${CYAN} WiFi 防掉线守护进程 v3.3 ${NC}"
+    echo -e "${CYAN} WiFi 防掉线守护进程 v3.5 ${NC}"
     echo -e "${CYAN}======================================${NC}"
     EXISTING_CRON=$(crontab -l 2>/dev/null | grep "$WATCHDOG_SCRIPT")
     if [ -n "$EXISTING_CRON" ]; then
@@ -238,7 +238,7 @@ toggle_watchdog() {
         echo "正在配置后台守护进程..."
         cat > "$WATCHDOG_SCRIPT" << 'WD1'
 #!/bin/bash
-# WiFi Watchdog v3.4 — 修复 iw link 误判导致 watchdog 杀死正常连接 + grep 误匹配
+# WiFi Watchdog v3.5 — ping-only 监控, 正常时不碰驱动 (解决 RTL8188FU 频繁断线)
 exec 200>/tmp/wifi_watchdog.lock
 flock -n 200 || exit 0
 
@@ -428,90 +428,72 @@ post_recover() {
 WD2
         cat >> "$WATCHDOG_SCRIPT" << 'WD3'
 
-# ========== 主循环 ==========
+# ========== 主循环 (v3.5: ping-only, 正常时不碰驱动) ==========
 rotate_log
+
+# --- 第一步: 只用 ping 检测, 绝不碰 iw/驱动 ---
+GW=$(ip route 2>/dev/null | awk '/default/ {print $3}' | head -1)
+
+if [ -n "$GW" ] && ping -c 2 -W 3 "$GW" >/dev/null 2>&1; then
+    # 网关可达, 网络正常, 直接退出, 不跑任何 iw 命令
+    OK_COUNT_FILE="/tmp/wifi_wd_ok_count"
+    OK_COUNT=$(cat "$OK_COUNT_FILE" 2>/dev/null || echo 0)
+    OK_COUNT=$((OK_COUNT + 1))
+    echo "$OK_COUNT" > "$OK_COUNT_FILE"
+    if [ $((OK_COUNT % 30)) -eq 0 ]; then
+        log "✅ 网络正常 (第${OK_COUNT}次巡逻) 网关=$GW"
+    fi
+    exit 0
+fi
+
+# 网关不通, 再试外网 (可能网关禁 ping 但网络实际正常)
+if ping -c 2 -W 3 223.5.5.5 >/dev/null 2>&1 || ping -c 2 -W 3 119.29.29.29 >/dev/null 2>&1; then
+    exit 0
+fi
+
+# --- 到这里说明真断了, 才开始用 iw/nmcli 诊断和恢复 ---
 IF=$(detect_iface)
 CONN=$(detect_conn)
 SIG=$(get_signal "$IF")
 if [ -n "$SIG" ]; then
-    log "检测开始 — IF=$IF CONN=$CONN 信号=${SIG}dBm"
+    log "⚠ 检测到断网 — IF=$IF CONN=$CONN 信号=${SIG}dBm"
 else
-    log "检测开始 — IF=$IF CONN=$CONN 信号=无"
+    log "⚠ 检测到断网 — IF=$IF CONN=$CONN 信号=无"
 fi
-# v3.2: 只在省电模式确实开着时才关, 不再每次 poke 驱动
+
+# 只在断线恢复时才关省电, 不在正常巡逻时碰
 PS_NOW=$(iw dev "$IF" get power_save 2>/dev/null | awk '{print $3}')
 if [ "$PS_NOW" = "on" ]; then
     log "  省电模式被发现开启, 正在关闭..."
     disable_ps "$IF"
 fi
 
-if ! check_associated "$IF"; then
-    # v3.4: iw dev link 在 RTL8188 上不可靠, 可能返回空但实际在线
-    # 先 ping 网关验证: ping 通 = iw 误判, 跳过恢复
-    local GW; GW=$(ip route 2>/dev/null | awk '/default/ {print $3}' | head -1)
-    if [ -n "$GW" ] && ping -c 1 -W 2 "$GW" >/dev/null 2>&1; then
-        log "iw link 不可靠但网关可达($GW), 跳过 (RTL8188 驱动 bug)"
-    else
-        log "⚠ WiFi 未关联到任何 AP"
-        start_timer
-        REASON=$(categorize_reason "$IF")
-        log "  断网原因: $REASON"
-        for level in 1 2 3 4; do
-            case $level in 1) p=60 ;; 2) p=90 ;; 3) p=120 ;; 4) p=90 ;; esac
-            recover_with_patience "$level" "$p" "$IF"
-            if [ $? -eq 0 ]; then
-                DUR=$(elapsed_time)
-                log "✅ 恢复成功 (L${level}), 耗时 ${DUR}s, 原因: $REASON"
-                log_stats "success" "L${level}" "$DUR" "$REASON"
-                post_recover "$IF"
-                exit 0
-            fi
-        done
+start_timer
+REASON=$(categorize_reason "$IF")
+log "  断网原因: $REASON"
+
+for level in 1 2 3 4; do
+    case $level in 1) p=60 ;; 2) p=90 ;; 3) p=120 ;; 4) p=90 ;; esac
+    recover_with_patience "$level" "$p" "$IF"
+    if [ $? -eq 0 ]; then
         DUR=$(elapsed_time)
-        log "❌ 全部恢复失败, 耗时 ${DUR}s, 原因: $REASON"
-        log_stats "fail" "L4" "$DUR" "$REASON"
-        capture_snapshot "recovery_failed" "$IF"
-        exit 1
+        log "✅ 恢复成功 (L${level}), 耗时 ${DUR}s, 原因: $REASON"
+        log_stats "success" "L${level}" "$DUR" "$REASON"
+        post_recover "$IF"
+        exit 0
     fi
-fi
+done
 
-if ! check_net; then
-    log "⚠ 已关联但无网络"
-    start_timer
-    REASON=$(categorize_reason "$IF")
-    log "  断网原因: $REASON"
-    for level in 1 2 3 4; do
-        case $level in 1) p=60 ;; 2) p=90 ;; 3) p=120 ;; 4) p=90 ;; esac
-        recover_with_patience "$level" "$p" "$IF"
-        if [ $? -eq 0 ]; then
-            DUR=$(elapsed_time)
-            log "✅ 恢复成功 (L${level}), 耗时 ${DUR}s, 原因: $REASON"
-            log_stats "success" "L${level}" "$DUR" "$REASON"
-            post_recover "$IF"
-            exit 0
-        fi
-    done
-    DUR=$(elapsed_time)
-    log "❌ 全部恢复失败, 耗时 ${DUR}s, 原因: $REASON"
-    log_stats "fail" "L4" "$DUR" "$REASON"
-    capture_snapshot "recovery_failed" "$IF"
-    exit 1
-fi
-
-# v3.3: 网络正常, 每30次巡逻记一条OK日志
-OK_COUNT_FILE="/tmp/wifi_wd_ok_count"
-OK_COUNT=$(cat "$OK_COUNT_FILE" 2>/dev/null || echo 0)
-OK_COUNT=$((OK_COUNT + 1))
-echo "$OK_COUNT" > "$OK_COUNT_FILE"
-if [ $((OK_COUNT % 30)) -eq 0 ]; then
-    log "✅ 网络正常 (第${OK_COUNT}次巡逻) 信号=${SIG}dBm"
-fi
-exit 0
+DUR=$(elapsed_time)
+log "❌ 全部恢复失败, 耗时 ${DUR}s, 原因: $REASON"
+log_stats "fail" "L4" "$DUR" "$REASON"
+capture_snapshot "recovery_failed" "$IF"
+exit 1
 WD3
         chmod +x "$WATCHDOG_SCRIPT"
         (crontab -l 2>/dev/null | grep -v "$WATCHDOG_SCRIPT"; echo "$CRON_JOB") | crontab -
         echo -e "${GREEN}✅ 自动重连已开启 (每 $interval 分钟检测)${NC}"
-        echo -e "${YELLOW}watchdog v3.4: iw link 误判修复+grep 误匹配修复${NC}"
+        echo -e "${YELLOW}watchdog v3.5: ping-only 监控, 正常时不碰驱动${NC}"
         sleep 3
         ;;
     2)
@@ -1192,7 +1174,7 @@ while true; do
     echo -e "${CYAN}=================================================${NC}"
     echo " 1. 安装 WIFI 驱动 (RTL8188等)"
     echo " 2. 扫描并连接 WIFI"
-    echo -e " 3. 防掉线守护 ${GREEN}(watchdog v3.3 + 保活)${NC}"
+    echo -e " 3. 防掉线守护 ${GREEN}(watchdog v3.5 ping-only)${NC}"
     echo -e " 4. 网络信息与体检 ${GREEN}(含信号强度)${NC}"
     echo " 5. 配置静态/动态 IP"
     echo " 6. WiFi 热点 (AP模式)"
@@ -1206,7 +1188,7 @@ while true; do
     echo -e "14. ${GREEN}断网统计面板${NC} (新增)"
     echo " 0. 退出"
     echo -e "${CYAN}-------------------------------------------------${NC}"
-    echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v1.9.5: 9项优化"
+    echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v1.9.7: ping-only watchdog"
     echo -e "${CYAN}=================================================${NC}"
     read -p "选项 [0-14]: " choice
     case $choice in
