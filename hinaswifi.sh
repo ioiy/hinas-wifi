@@ -4,9 +4,9 @@
 # HiNAS WiFi 控制面板 (终极进化版)
 # 项目地址: https://github.com/ioiy/hinas-wifi
 # v1.9.7: watchdog v3.5 ping-only 监控 — 正常时只 ping 不碰驱动, 解决 RTL8188FU 频繁断线
-# ==========================================
+# v2.0.0: watchdog v3.5 ping-only + 省电模式保持开启(实测稳定) — 解决 RTL8188FU 频繁断线
 
-VERSION="1.9.8"
+VERSION="2.0.0"
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 WATCHDOG_SCRIPT="/usr/local/bin/wifi_watchdog.sh"
 KEEPALIVE_SCRIPT="/usr/local/bin/wifi_keepalive.sh"
@@ -185,7 +185,7 @@ toggle_watchdog() {
     local PS_STATE
     PS_STATE=$(iw dev "$IF" get power_save 2>/dev/null | awk '{print $3}')
     if [ "$PS_STATE" = "on" ]; then
-        echo -e "省电模式: ${RED}开启 (可能导致断网! 菜单15关闭)${NC}"
+        echo -e "省电模式: ${GREEN}开启 (正常)${NC}"
     else
         echo -e "省电模式: ${GREEN}已关闭${NC}"
     fi
@@ -551,7 +551,7 @@ show_network_info() {
         echo -e "信号:     ${YELLOW}未获取${NC}"
     fi
     if [ "$PS_STATE" = "on" ]; then
-        echo -e "省电:     ${RED}开启(建议关闭! 菜单15自行关闭)${NC}"
+        echo -e "省电:     ${GREEN}开启 (正常)${NC}"
     else
         echo -e "省电:     ${GREEN}已关闭${NC}"
     fi
@@ -1022,7 +1022,7 @@ ipv6_panel() {
 watchdog_stats() {
     clear
     echo -e "${CYAN}======================================${NC}"
-    echo -e "${CYAN} 断网统计面板 v1.9.8 ${NC}"
+    echo -e "${CYAN} 断网统计面板 v2.0.0 ${NC}"
     echo -e "${CYAN}======================================${NC}"
 
     local STATS_FILE="/var/log/wifi_watchdog.stats"
@@ -1166,13 +1166,13 @@ toggle_power_save() {
     echo -e "USB 挂起控制:       ${USB_CTRL:-未知} (on=不挂起)"
     echo "--------------------------------------"
     if [ "$PS_STATE" = "on" ]; then
-        echo -e "综合状态: ${RED}🔴 省电开启 (可能导致断网!)${NC}"
+        echo -e "综合状态: ${GREEN}🟢 省电开启 (正常)${NC}"
     else
-        echo -e "综合状态: ${GREEN}🟢 省电已关闭${NC}"
+        echo -e "综合状态: ${YELLOW}🟡 省电已关闭 (可能过热/USB供电不足)${NC}"
     fi
     echo "--------------------------------------"
-    echo "1. ${GREEN}关闭省电${NC} (推荐! 防 RTL8188 休眠断网)"
-    echo "2. 开启省电 (省电但可能频繁断网)"
+    echo "1. 关闭省电 (不建议, 可能过热/USB供电不足)"
+    echo "2. ${GREEN}开启省电${NC} (推荐! RTL8188FU 省电模式稳定)"
     echo "0. 返回"
     echo -e "${CYAN}======================================${NC}"
     read -p "选项: " ps_choice
@@ -1199,7 +1199,7 @@ toggle_power_save() {
         echo -e "${YELLOW}正在开启省电...${NC}"
         iw dev "$WIFI_IF" set power_save on 2>/dev/null
         [ -n "$CONN" ] && nmcli con mod "$CONN" 802-11-wireless.powersave 3 2>/dev/null
-        echo -e "${GREEN}✅ 省电已开启${NC}"
+        echo -e "${GREEN}✅ 省电已开启, RTL8188FU 省电模式稳定运行${NC}"
         echo -e "${YELLOW}⚠ RTL8188 省电可能导致频繁断网!${NC}" ;;
     0) return ;;
     esac
@@ -1226,10 +1226,10 @@ while true; do
     echo "12. WiFi 信道分析"
     echo "13. 配置备份/恢复"
     echo -e "14. ${GREEN}断网统计面板${NC}"
-    echo -e "15. ${GREEN}省电模式开关${NC} (推荐关闭!)"
+    echo -e "15. ${GREEN}省电模式开关${NC}"
     echo " 0. 退出"
     echo -e "${CYAN}-------------------------------------------------${NC}"
-    echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v1.9.7: ping-only watchdog"
+    echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v2.0.0: ping-only + 省电优化"
     echo -e "${CYAN}=================================================${NC}"
     read -p "选项 [0-15]: " choice
     case $choice in
