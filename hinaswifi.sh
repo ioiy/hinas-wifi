@@ -748,6 +748,8 @@ connect_wifi() {
  # v2.1.0: 默认设 IPv6=ignore (NM不管IPv6, 内核自己处理RA), 避免路由器IPv6不稳定拖垮DHCPv4
  [ -n "$CONN_TMP" ] && nmcli con mod "$CONN_TMP" ipv6.method ignore 2>/dev/null
  sysctl -w net.ipv6.conf.${WIFI_IF}.accept_ra=1 >/dev/null 2>&1
+ # 持久化 accept_ra (重启后生效)
+ echo "net.ipv6.conf.${WIFI_IF}.accept_ra=1" > /etc/sysctl.d/99-hinaswifi-ipv6.conf 2>/dev/null
  else
  echo -e "${RED}❌ 失败${NC}"
  fi
@@ -1265,6 +1267,8 @@ toggle_ipv6() {
  1)
  nmcli con mod "$CONN" ipv6.method ignore 2>/dev/null
  sysctl -w net.ipv6.conf.${WIFI_IF}.accept_ra=1 >/dev/null 2>&1
+ # 持久化 accept_ra (重启后生效)
+ echo "net.ipv6.conf.${WIFI_IF}.accept_ra=1" > /etc/sysctl.d/99-hinaswifi-ipv6.conf 2>/dev/null
  nmcli con up "$CONN" >/dev/null 2>&1
  echo -e "${GREEN}✅ 已设为 ignore${NC}"
  echo -e " NM不再管理IPv6, 内核自己处理RA"
@@ -1277,6 +1281,7 @@ toggle_ipv6() {
  3)
  nmcli con mod "$CONN" ipv6.method disabled 2>/dev/null
  nmcli con up "$CONN" >/dev/null 2>&1
+ rm -f /etc/sysctl.d/99-hinaswifi-ipv6.conf 2>/dev/null
  echo -e "${RED}✅ 已禁用IPv6${NC}" ;;
  0) return ;;
  esac
