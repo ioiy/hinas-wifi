@@ -6,8 +6,9 @@
 # v1.9.7: watchdog v3.5 ping-only 监控 — 正常时只 ping 不碰驱动, 解决 RTL8188FU 频繁断线
 # v2.0.0: watchdog v3.5 ping-only + 省电模式保持开启(实测稳定) — 解决 RTL8188FU 频繁断线
 # v2.1.0: IPv6 模式开关 — NM ignore 避免路由器 IPv6 不稳定拖垮 DHCPv4
+# v2.2.0: BSSID 锁定/解除 — 双AP同名SSID环境防漫游互踢
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 WATCHDOG_SCRIPT="/usr/local/bin/wifi_watchdog.sh"
 KEEPALIVE_SCRIPT="/usr/local/bin/wifi_keepalive.sh"
@@ -1288,6 +1289,118 @@ toggle_ipv6() {
  read -n 1 -s -r -p "按任意键返回..."
 }
 # ========== 主菜单 ==========
+toggle_bssid_lock() {
+ clear
+ echo -e "${CYAN}======================================${NC}"
+ echo -e "${CYAN} BSSID 锁定 (防漫游) ${NC}"
+ echo -e "${CYAN}======================================${NC}"
+ WIFI_IF=$(get_wifi_iface)
+ CONN=$(get_wifi_conn)
+ if [ -z "$CONN" ]; then
+ echo -e "${RED}❌ 未连接 WiFi${NC}"
+ read -n 1 -s -r -p "按任意键返回..."; return
+ fi
+
+ # 当前锁定状态
+ LOCKED_BSSID=$(nmcli -t -f 802-11-wireless.bssid con show "$CONN" 2>/dev/null | cut -d: -f2)
+ CUR_BSSID=$(iw dev "$WIFI_IF" link 2>/dev/null | grep -oi "Connected to [0-9a-f:]*" | awk '{print $3}')
+ CUR_SSID=$(nmcli -t -f 802-11-wireless.ssid con show "$CONN" 2>/dev/null | cut -d: -f2)
+
+ echo -e "接口: ${GREEN}$WIFI_IF${NC}  连接: ${GREEN}$CONN${NC}  SSID: ${GREEN}$CUR_SSID${NC}"
+ echo "--------------------------------------"
+
+ if [ -n "$LOCKED_BSSID" ] && [ "$LOCKED_BSSID" != "--" ]; then
+ # 已锁定
+ echo -e "当前状态: ${GREEN}🔒 已锁定${NC}"
+ echo -e "锁定 BSSID: ${GREEN}$LOCKED_BSSID${NC}"
+ if [ -n "$CUR_BSSID" ]; then
+ echo -e "实际连接: ${GREEN}$CUR_BSSID${NC}"
+ fi
+ echo "--------------------------------------"
+ echo -e "${YELLOW}锁定后设备只认这一个 AP, 不漫游到同名 SSID 的其他 AP${NC}"
+ echo ""
+ echo "1. ${RED}解除锁定${NC} — 允许漫游 (不推荐, 双AP环境会互踢)"
+ echo "0. 返回"
+ echo -e "${CYAN}======================================${NC}"
+ read -p "选项: " bssid_choice
+ case $bssid_choice in
+ 1)
+ nmcli con mod "$CONN" 802-11-wireless.bssid "" 2>/dev/null
+ nmcli con up "$CONN" >/dev/null 2>&1
+ echo -e "${YELLOW}⚠ 已解除 BSSID 锁定${NC}"
+ echo -e " 设备可能漫游到其他同名 AP, 导致频繁 deauth"
+ ;;
+ 0) return ;;
+ esac
+ else
+ # 未锁定 — 扫描同名 SSID 的 AP
+ echo -e "当前状态: ${YELLOW}🔓 未锁定${NC}"
+ if [ -n "$CUR_BSSID" ]; then
+ echo -e "当前连接: ${GREEN}$CUR_BSSID${NC}"
+ fi
+ echo "--------------------------------------"
+ echo -e "扫描同名 SSID 的 AP..."
+ echo ""
+
+ # 扫描并列出同名 SSID 的 AP
+ AP_LIST=$(nmcli -t -f BSSID,SSID,SIGNAL,FREQ dev wifi list --rescan yes 2>/dev/null | grep ":${CUR_SSID}:")
+
+ if [ -z "$AP_LIST" ]; then
+ echo -e "${RED}❌ 扫描失败或未找到同名 AP${NC}"
+ read -n 1 -s -r -p "按任意键返回..."; return
+ fi
+
+ # 显示 AP 列表 (按信号排序)
+ echo -e "  序号  BSSID               信号   信道"
+ echo "  ----  ------------------  -----  ----"
+ AP_COUNT=0
+ AP_BSSIDS=()
+ while IFS=: read -r BSSID SSID SIGNAL FREQ; do
+ AP_COUNT=$((AP_COUNT + 1))
+ AP_BSSIDS[$AP_COUNT]=$BSSID
+ # 频率转信道
+ CH=$(( (FREQ / 1000 - 2412) / 5 + 1 ))
+ [ "$FREQ" -gt 5000 ] 2>/dev/null && CH=$(( (FREQ / 1000 - 5000) / 5 + 36 ))
+ # 标记当前连接
+ MARK=""
+ [ "$BSSID" = "$CUR_BSSID" ] && MARK=" ← 当前"
+ printf "  ${GREEN}%-3d${NC}   %-18s  %4d   %3d%s\n" "$AP_COUNT" "$BSSID" "$SIGNAL" "$CH" "$MARK"
+ done <<< "$(echo "$AP_LIST" | sort -t: -k3 -nr)"
+
+ echo ""
+ echo -e "${YELLOW}建议: 锁定信号最强的 AP (序号 1)${NC}"
+ echo ""
+ echo -e "输入序号 ${GREEN}1-$AP_COUNT${NC} 锁定, 或 0 返回:"
+ echo -e "${CYAN}======================================${NC}"
+ read -p "选项: " bssid_choice
+
+ if [ "$bssid_choice" = "0" ] || [ -z "$bssid_choice" ]; then
+ return
+ fi
+
+ if ! [[ "$bssid_choice" =~ ^[0-9]+$ ]] || [ "$bssid_choice" -lt 1 ] || [ "$bssid_choice" -gt "$AP_COUNT" ]; then
+ echo -e "${RED}❌ 无效序号${NC}"
+ read -n 1 -s -r -p "按任意键返回..."; return
+ fi
+
+ TARGET_BSSID=${AP_BSSIDS[$bssid_choice]}
+ echo -e "锁定到: ${GREEN}$TARGET_BSSID${NC}"
+ echo -e "正在应用..."
+ nmcli con mod "$CONN" 802-11-wireless.bssid "$TARGET_BSSID" 2>/dev/null
+ nmcli con up "$CONN" >/dev/null 2>&1
+ sleep 2
+ # 验证
+ NEW_BSSID=$(iw dev "$WIFI_IF" link 2>/dev/null | grep -oi "Connected to [0-9a-f:]*" | awk '{print $3}')
+ if [ "$NEW_BSSID" = "$TARGET_BSSID" ]; then
+ echo -e "${GREEN}✅ 已锁定到 $TARGET_BSSID${NC}"
+ echo -e " 设备只认这个 AP, 不再漫游到其他同名 AP"
+ else
+ echo -e "${YELLOW}⚠ 锁定指令已下发, 但当前连接的是 $NEW_BSSID${NC}"
+ echo -e " 可能需要等待切换, 或该 AP 信号不足"
+ fi
+ fi
+ read -n 1 -s -r -p "按任意键返回..."
+}
 while true; do
  clear
  echo -e "${CYAN}=================================================${NC}"
@@ -1309,11 +1422,12 @@ while true; do
  echo -e "14. ${GREEN}断网统计面板${NC}"
  echo -e "15. ${GREEN}省电模式开关${NC}"
  echo -e "16. ${GREEN}IPv6 模式开关${NC} (v2.1.0)"
+ echo -e "17. ${GREEN}BSSID 锁定/解除${NC} (v2.2.0)"
  echo " 0. 退出"
  echo -e "${CYAN}-------------------------------------------------${NC}"
- echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v2.1.0: ping-only + 省电 + IPv6开关"
+ echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v2.2.0: ping-only + 省电 + IPv6 + BSSID锁定"
  echo -e "${CYAN}=================================================${NC}"
- read -p "选项 [0-16]: " choice
+ read -p "选项 [0-17]: " choice
  case $choice in
  1) install_driver ;;
  2) connect_wifi ;;
@@ -1331,6 +1445,7 @@ while true; do
  14) watchdog_stats ;;
  15) toggle_power_save ;;
  16) toggle_ipv6 ;;
+ 17) toggle_bssid_lock ;;
  0) clear; echo "已退出。"; exit 0 ;;
  *) echo -e "${RED}无效${NC}"; sleep 1 ;;
  esac
