@@ -149,7 +149,11 @@ update_script() {
  echo -e "${RED}❌ 无网络连接，无法获取更新！请先连接 WiFi 或网线。${NC}"
  sleep 3; return
  fi
- CLOUD_VERSION=$(wget -qO- "$UPDATE_URL" | grep -E "^VERSION=" | head -n 1 | cut -d\" -f2)
+ CLOUD_VERSION=$(wget -qO- --timeout=10 --tries=2 "$UPDATE_URL" 2>/dev/null | grep -E "^VERSION=" | head -n 1 | cut -d\" -f2)
+ if [ -z "$CLOUD_VERSION" ]; then
+  # ghfast.top 代理挂了, 试 GitHub 直连
+  CLOUD_VERSION=$(wget -qO- --timeout=10 --tries=2 "https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh" 2>/dev/null | grep -E "^VERSION=" | head -n 1 | cut -d\" -f2)
+ fi
  if [ -z "$CLOUD_VERSION" ]; then
  echo -e "${RED}❌ 获取云端版本失败。${NC}"
  sleep 3; return
@@ -174,7 +178,14 @@ update_script() {
  fi
  fi
  echo -e "${GREEN}正在下载最新代码...${NC}"
- if wget -q -O /tmp/hinaswifi.sh.tmp "$UPDATE_URL"; then
+ local DL_OK=0
+ if wget -q --timeout=30 --tries=2 -O /tmp/hinaswifi.sh.tmp "$UPDATE_URL" 2>/dev/null; then
+  DL_OK=1
+ elif wget -q --timeout=30 --tries=2 -O /tmp/hinaswifi.sh.tmp "https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh" 2>/dev/null; then
+  echo -e "${YELLOW}(通过 GitHub 直连下载)${NC}"
+  DL_OK=1
+ fi
+ if [ "$DL_OK" = "1" ]; then
  if ! grep -q "^VERSION=" /tmp/hinaswifi.sh.tmp; then
  echo -e "${RED}❌ 下载的文件不合法(缺少VERSION行)，已放弃更新。${NC}"
  rm -f /tmp/hinaswifi.sh.tmp; sleep 3; return
