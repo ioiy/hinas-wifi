@@ -635,8 +635,8 @@ config_priority() {
  echo -e "${CYAN}======================================${NC}"
  nmcli -t -f NAME,DEVICE,TYPE connection show --active | awk -F: '{print "▶ "$1" ("$2")"}'
  echo "--------------------------------------"
- read -p "优先连接名(q返回): " pri_conn
- [[ "$pri_conn" == "q" || -z "$pri_conn" ]] && return
+ read -p "优先连接名(回车返回): " pri_conn
+ [ -z "$pri_conn" ] && return
  read -p "备用连接名(可跳过): " sec_conn
  nmcli con mod "$pri_conn" ipv4.route-metric 50 && echo -e "${GREEN}优先完成${NC}"
  [ -n "$sec_conn" ] && nmcli con mod "$sec_conn" ipv4.route-metric 100 && echo -e "${GREEN}备用完成${NC}"
@@ -672,7 +672,7 @@ run_speedtest() {
  fi
  done
  if [ -n "$s" ] && [ "$s" != "0" ] && [ "$s" != "0.000" ]; then
- mbps=$(awk "BEGIN{printf "%.2f", $s / 125000}")
+		mbps=$(awk -v s=$s 'BEGIN{printf "%.2f", s / 125000}')
  echo -e "  ${label}: ${GREEN}${mbps} Mbps${NC}"
  else
  echo -e "  ${label}: ${RED}❌ 不可达${NC}"
@@ -680,21 +680,11 @@ run_speedtest() {
  }
 
  case $st_choice in
- 1) _test_urls "国内测速" 
- "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" 
- "https://dldir1v6.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" 
- "http://mirrors.aliyun.com/centos/timestamp.txt" ;;
- 2) _test_urls "国外测速" 
- "https://speed.cloudflare.com/__down?bytes=10000000" 
- "http://speedtest.tele2.net/10MB.zip" ;;
+ 1) _test_urls "国内测速" "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" "https://dldir1v6.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" "http://mirrors.aliyun.com/centos/timestamp.txt" ;;
+ 2) _test_urls "国外测速" "https://speed.cloudflare.com/__down?bytes=10000000" "http://speedtest.tele2.net/10MB.zip" ;;
  3)
- _test_urls "国内测速" 
- "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" 
- "https://dldir1v6.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" 
- "http://mirrors.aliyun.com/centos/timestamp.txt"
- _test_urls "国外测速" 
- "https://speed.cloudflare.com/__down?bytes=10000000" 
- "http://speedtest.tele2.net/10MB.zip" ;;
+ _test_urls "国内测速" "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" "https://dldir1v6.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" "http://mirrors.aliyun.com/centos/timestamp.txt"
+ _test_urls "国外测速" "https://speed.cloudflare.com/__down?bytes=10000000" "http://speedtest.tele2.net/10MB.zip" ;;
  *) echo -e "${RED}无效${NC}" ;;
  esac
  echo "--------------------------------------"
@@ -804,7 +794,7 @@ dns_optimize() {
  [ -z "$T1" ] && { echo -e " $NAME ($IP): ${RED}无响应${NC}"; continue; }
  T2=$(ping -c 1 -W 2 "$IP" 2>/dev/null | grep -oP 'time=\K[0-9.]+')
  T3=$(ping -c 1 -W 2 "$IP" 2>/dev/null | grep -oP 'time=\K[0-9.]+')
- AVG=$(awk "BEGIN{printf "%.1f", ($T1+$T2+$T3)/3}")
+		AVG=$(awk -v t1=$T1 -v t2=$T2 -v t3=$T3 'BEGIN{printf "%.1f", (t1+t2+t3)/3}')
  printf " %-12s (%s): %6s ms\n" "$NAME" "$IP" "$AVG"
  if [ -n "$AVG" ]; then
 		if awk "BEGIN{exit !($AVG < $BEST_TIME)}"; then
@@ -1904,7 +1894,7 @@ show_wifi_passwords() {
 		[ -z "$SSID" ] && SSID="$conn"
 
 		# 获取密码
-		local PASS; PASS=$(nmcli -t -f 802-11-wireless-security.psk con show "$conn" 2>/dev/null | cut -d: -f2)
+		local PASS; PASS=$(nmcli -s -t -f 802-11-wireless-security.psk con show "$conn" 2>/dev/null | cut -d: -f2)
 		[ -z "$PASS" ] && PASS="(无密码/未知)"
 
 		# 获取状态
@@ -2033,12 +2023,32 @@ diagnostic_report() {
 	echo "  cat $REPORT"
 	echo "  scp root@<盒子IP>:$REPORT ./  # 传到电脑"
 	echo "--------------------------------------"
-	echo "1. 立即查看  0. 返回"
+	echo "1. 立即查看"
+	echo "2. 清除所有诊断报告"
+	echo "0. 返回"
 	read -p "选项: " dr_choice
-	[ "$dr_choice" = "1" ] && less "$REPORT" 2>/dev/null || cat "$REPORT" 2>/dev/null | head -80
-	read -n 1 -s -r -p "按任意键返回..."
-}
+	if [ "$dr_choice" = "1" ]; then
+		less "$REPORT" 2>/dev/null || cat "$REPORT" 2>/dev/null | head -80
+		echo -e "${CYAN}--------------------------------------${NC}"
+		read -n 1 -s -r -p "按任意键返回..."
+	elif [ "$dr_choice" = "2" ]; then
+		local OLD_COUNT=$(ls -1 /root/wifi_diagnostic_*.txt 2>/dev/null | wc -l)
+		if [ "$OLD_COUNT" -eq 0 ]; then
+			echo -e "${YELLOW}没有诊断报告文件${NC}"
+		else
+			echo -e "${YELLOW}找到 $OLD_COUNT 个诊断报告，确认清除? (y/n)${NC}"
+			read -p "" confirm
+			if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+				rm -f /root/wifi_diagnostic_*.txt
+				echo -e "${GREEN}✅ 已清除 $OLD_COUNT 个诊断报告${NC}"
+			else
+				echo -e "${YELLOW}已取消${NC}"
+			fi
+		fi
+		read -n 1 -s -r -p "按任意键返回..."
+	fi
 
+}
 # --- 定时重连 ---
 toggle_scheduled_reconnect() {
 	clear
@@ -2232,15 +2242,15 @@ while true; do
  echo -e "${CYAN}=================================================${NC}"
  echo -e "${CYAN} HiNAS WiFi 控制面板 v${VERSION} ${NC}"
  echo -e "${CYAN}=================================================${NC}"
- echo -e " 1. ${GREEN}网络连接${NC}  (扫描/密码/BSSID/优先级/多WiFi)"
- echo -e " 2. ${GREEN}热点与救生${NC} (热点/客户端/自动热点)"
- echo -e " 3. ${GREEN}防掉线守护${NC} (watchdog/统计/省电/定时重连)"
- echo -e " 4. ${GREEN}网络配置${NC}  (IP/IPv6/DNS)"
- echo -e " 5. ${GREEN}诊断与工具${NC} (信息/测速/信道/备份/诊断报告)"
- echo -e " 6. ${GREEN}驱动与更新${NC} (驱动/在线更新)"
+ echo -e " 1. 网络连接  (扫描/密码/BSSID/优先级/多WiFi)"
+ echo -e " 2. 热点与救生 (热点/客户端/自动热点)"
+ echo -e " 3. 防掉线守护 (watchdog/统计/省电/定时重连)"
+ echo -e " 4. 网络配置  (IP/IPv6/DNS)"
+ echo -e " 5. 诊断与工具 (信息/测速/信道/备份/诊断报告)"
+ echo -e " 6. 驱动与更新 (驱动/在线更新)"
  echo " 0. 退出"
  echo -e "${CYAN}-------------------------------------------------${NC}"
- echo -e " ${GREEN}wifi${NC} 快速打开 | v2.3.1: ping-only+省电+IPv6+BSSID+自动热点+客户端+密码+优先级+定时重连+诊断报告"
+ echo -e " ${GREEN}wifi${NC} 快速打开 | v${VERSION}"
  echo -e "${CYAN}=================================================${NC}"
  read -p "选项 [0-6]: " choice
  case $choice in
@@ -2250,9 +2260,10 @@ while true; do
    echo -e "${CYAN}========== 网络连接 ==========${NC}"
    echo " 1. 扫描并连接 WiFi"
    echo " 2. WiFi 密码查看"
-   echo -e " 3. ${GREEN}BSSID 锁定/解除${NC} (v2.2.0)"
+   local _BSSID_LOCK=""; nmcli -t -f 802-11-wireless.bssid con show "$(nmcli -t -f NAME,ACTIVE con show 2>/dev/null | grep :yes | cut -d: -f1)" 2>/dev/null | cut -d: -f2 | grep -q . && _BSSID_LOCK="${GREEN}"
+   [ -n "$_BSSID_LOCK" ] && echo -e " 3. ${_BSSID_LOCK}BSSID 锁定/解除${NC} 🔒已锁定" || echo " 3. BSSID 锁定/解除"
    echo " 4. 多网卡优先级"
-   echo -e " 5. ${GREEN}多 WiFi 优先级${NC} (v2.3.1)"
+   echo " 5. 多 WiFi 优先级"
    echo " 0. 返回主菜单"
    echo -e "${CYAN}==============================${NC}"
    read -p "选项: " sub
@@ -2272,7 +2283,8 @@ while true; do
    echo -e "${CYAN}========== 热点与救生 ==========${NC}"
    echo " 1. WiFi 热点 (AP模式)"
    echo " 2. 热点客户端列表"
-   echo -e " 3. ${GREEN}自动热点救生${NC} (v2.3.1)"
+   local _AH=""; crontab -l 2>/dev/null | grep -q "wifi_auto_hotspot.sh" && _AH="${GREEN}"
+   [ -n "$_AH" ] && echo -e " 3. ${_AH}自动热点救生${NC} ▶已开启" || echo " 3. 自动热点救生"
    echo " 0. 返回主菜单"
    echo -e "${CYAN}================================${NC}"
    read -p "选项: " sub
@@ -2288,10 +2300,13 @@ while true; do
   while true; do
    clear
    echo -e "${CYAN}======== 防掉线守护 ========${NC}"
-   echo -e " 1. 守护开关 ${GREEN}(watchdog v3.5)${NC}"
-   echo -e " 2. ${GREEN}断网统计面板${NC}"
-   echo -e " 3. ${GREEN}省电模式开关${NC}"
-   echo -e " 4. ${GREEN}定时重连${NC} (v2.3.1)"
+   local _WD=""; crontab -l 2>/dev/null | grep -q "wifi_watchdog.sh" && _WD="${GREEN}"
+   [ -n "$_WD" ] && echo -e " 1. ${_WD}守护开关${NC} ▶已开启" || echo " 1. 守护开关 (watchdog v3.5)"
+   echo " 2. 断网统计面板"
+   local _PS=""; local _IF=$(get_wifi_iface); iw dev "$_IF" get power_save 2>/dev/null | grep -q on && _PS="${GREEN}"
+   [ -n "$_PS" ] && echo -e " 3. ${_PS}省电模式${NC} ▶已开启" || echo " 3. 省电模式开关"
+   local _RC=""; crontab -l 2>/dev/null | grep -q "wifi_scheduled_reconnect.sh" && _RC="${GREEN}"
+   [ -n "$_RC" ] && echo -e " 4. ${_RC}定时重连${NC} ▶已开启" || echo " 4. 定时重连"
    echo " 0. 返回主菜单"
    echo -e "${CYAN}============================${NC}"
    read -p "选项: " sub
@@ -2309,7 +2324,8 @@ while true; do
    clear
    echo -e "${CYAN}========== 网络配置 ==========${NC}"
    echo " 1. 配置静态/动态 IP"
-   echo -e " 2. ${GREEN}IPv6 模式开关${NC} (v2.1.0)"
+   local _IF6=$(get_wifi_iface); local _IPV6=""; [ "$(nmcli -t -f ipv6.method con show "$(nmcli -t -f NAME,ACTIVE con show 2>/dev/null | grep :yes | cut -d: -f1)" 2>/dev/null | cut -d: -f2)" = "ignore" ] && _IPV6="${GREEN}"
+   [ -n "$_IPV6" ] && echo -e " 2. ${_IPV6}IPv6 模式${NC} ▶ignore" || echo " 2. IPv6 模式开关"
    echo " 3. IPv6 详细面板"
    echo " 4. DNS 测速优化"
    echo " 0. 返回主菜单"
@@ -2328,11 +2344,11 @@ while true; do
   while true; do
    clear
    echo -e "${CYAN}======== 诊断与工具 ========${NC}"
-   echo -e " 1. 网络信息与体检 ${GREEN}(含信号强度)${NC}"
+   echo " 1. 网络信息与体检 (含信号强度)"
    echo " 2. 网络测速 (国内/国外)"
    echo " 3. WiFi 信道分析"
    echo " 4. 配置备份/恢复"
-   echo -e " 5. ${GREEN}一键诊断报告${NC} (v2.3.1)"
+   echo " 5. 一键诊断报告"
    echo " 0. 返回主菜单"
    echo -e "${CYAN}============================${NC}"
    read -p "选项: " sub
@@ -2351,7 +2367,7 @@ while true; do
    clear
    echo -e "${CYAN}======== 驱动与更新 ========${NC}"
    echo " 1. 安装 WIFI 驱动 (RTL8188等)"
-   echo -e " 2. ${GREEN}在线更新${NC} (当前 v${VERSION})"
+   echo " 2. 在线更新 (当前 v${VERSION})"
    echo " 0. 返回主菜单"
    echo -e "${CYAN}============================${NC}"
    read -p "选项: " sub
