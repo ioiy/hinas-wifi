@@ -135,7 +135,7 @@ check_network() {
  fi
  ping -c 2 -W 3 223.5.5.5 >/dev/null 2>&1 && return 0
  ping -c 2 -W 3 119.29.29.29 >/dev/null 2>&1 && return 0
- ping6 -c 2 -W 3 2408:8899::8 >/dev/null 2>&1 && return 0
+ timeout 5 ping6 -c 2 -W 2 2408:8899::8 >/dev/null 2>&1 && return 0
  return 1
 }
 
@@ -149,11 +149,13 @@ update_script() {
  echo -e "${RED}❌ 无网络连接，无法获取更新！请先连接 WiFi 或网线。${NC}"
  sleep 3; return
  fi
- CLOUD_VERSION=$(wget -qO- --timeout=10 --tries=2 "$UPDATE_URL" 2>/dev/null | grep -E "^VERSION=" | head -n 1 | cut -d\" -f2)
- if [ -z "$CLOUD_VERSION" ]; then
-  # ghfast.top 代理挂了, 试 GitHub 直连
-  CLOUD_VERSION=$(wget -qO- --timeout=10 --tries=2 "https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh" 2>/dev/null | grep -E "^VERSION=" | head -n 1 | cut -d\" -f2)
- fi
+ # 依次尝试: ghfast代理 → GitHub直连 → ghproxy镜像, 每个最多8秒
+ for U in "$UPDATE_URL" \
+   "https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh" \
+   "https://ghproxy.com/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"; do
+  CLOUD_VERSION=$(timeout 8 wget -qO- --timeout=5 --tries=1 "$U" 2>/dev/null | grep -E "^VERSION=" | head -n 1 | cut -d\" -f2)
+  [ -n "$CLOUD_VERSION" ] && break
+ done
  if [ -z "$CLOUD_VERSION" ]; then
  echo -e "${RED}❌ 获取云端版本失败。${NC}"
  sleep 3; return
@@ -179,12 +181,13 @@ update_script() {
  fi
  echo -e "${GREEN}正在下载最新代码...${NC}"
  local DL_OK=0
- if wget -q --timeout=30 --tries=2 -O /tmp/hinaswifi.sh.tmp "$UPDATE_URL" 2>/dev/null; then
-  DL_OK=1
- elif wget -q --timeout=30 --tries=2 -O /tmp/hinaswifi.sh.tmp "https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh" 2>/dev/null; then
-  echo -e "${YELLOW}(通过 GitHub 直连下载)${NC}"
-  DL_OK=1
- fi
+ for U in "$UPDATE_URL" \
+   "https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh" \
+   "https://ghproxy.com/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"; do
+  if timeout 30 wget -q --timeout=10 --tries=1 -O /tmp/hinaswifi.sh.tmp "$U" 2>/dev/null; then
+   DL_OK=1; break
+  fi
+ done
  if [ "$DL_OK" = "1" ]; then
  if ! grep -q "^VERSION=" /tmp/hinaswifi.sh.tmp; then
  echo -e "${RED}❌ 下载的文件不合法(缺少VERSION行)，已放弃更新。${NC}"
