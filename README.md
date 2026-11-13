@@ -109,7 +109,6 @@ headless 盒子搬到新环境，附近没有已保存的 WiFi，又没有网线
 3. **双 AP 同名 SSID 漫游冲突** → v2.2.0 BSSID 锁定，deauth 消失
 4. **无网线环境下盒子失联** → v2.3.0 自动热点救生，手机连热点即可远程配置
 
-> 详细排查过程见 [hinas-wifi-排查记录.md](https://github.com/ioiy/hinas-wifi/blob/main/hinas-wifi-排查记录.md)
 
 ## 📝 适用环境
 
