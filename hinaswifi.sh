@@ -7,11 +7,14 @@
 # v2.0.0: watchdog v3.5 ping-only + 省电模式保持开启(实测稳定) — 解决 RTL8188FU 频繁断线
 # v2.1.0: IPv6 模式开关 — NM ignore 避免路由器 IPv6 不稳定拖垮 DHCPv4
 # v2.2.0: BSSID 锁定/解除 — 双AP同名SSID环境防漫游互踢
+# v2.3.0: 自动热点救生 — 无WiFi连接时自动开热点, 热点时定期探测恢复
 
-VERSION="2.2.0"
+VERSION="2.3.0"
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 WATCHDOG_SCRIPT="/usr/local/bin/wifi_watchdog.sh"
 KEEPALIVE_SCRIPT="/usr/local/bin/wifi_keepalive.sh"
+AUTO_HOTSPOT_SCRIPT="/usr/local/bin/wifi_auto_hotspot.sh"
+AUTO_HOTSPOT_CONFIG="/etc/hinaswifi/auto_hotspot.conf"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -1401,6 +1404,345 @@ toggle_bssid_lock() {
  fi
  read -n 1 -s -r -p "按任意键返回..."
 }
+toggle_auto_hotspot() {
+	clear
+	echo -e "${CYAN}======================================${NC}"
+	echo -e "${CYAN} 自动热点救生通道 v2.3.0 ${NC}"
+	echo -e "${CYAN}======================================${NC}"
+
+	local CONFIG_DIR="/etc/hinaswifi"
+	local CONFIG_FILE="$AUTO_HOTSPOT_CONFIG"
+	local SCRIPT_FILE="$AUTO_HOTSPOT_SCRIPT"
+
+	# 加载当前配置
+	local ENABLED=0 SSID="HINAS" PASS="88888888" TIMEOUT=10 INTERVAL=2 PROBE=6
+	[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
+
+	# 检查 crontab 状态
+	local CRON_ENTRY
+	CRON_ENTRY=$(crontab -l 2>/dev/null | grep "$SCRIPT_FILE")
+
+	# 显示状态
+	if [ "$ENABLED" = "1" ] && [ -n "$CRON_ENTRY" ]; then
+		echo -e "状态: ${GREEN}▶ 已开启${NC}"
+	else
+		echo -e "状态: ${RED}⏸ 未开启${NC}"
+	fi
+	echo "--------------------------------------"
+	echo -e "热点名称:   ${GREEN}${SSID}${NC}"
+	echo -e "热点密码:   ${GREEN}${PASS}${NC}"
+	echo -e "超时阈值:   ${GREEN}${TIMEOUT} 分钟${NC} (无WiFi连接多久后开热点)"
+	echo -e "检测间隔:   ${GREEN}${INTERVAL} 分钟${NC} (检查频率)"
+	echo -e "探测间隔:   ${GREEN}${PROBE} 分钟${NC} (热点时多久尝试重连已保存WiFi)"
+	echo "--------------------------------------"
+	echo -e " ${YELLOW}开启后: 盒子无WiFi连接 ${TIMEOUT} 分钟 → 自动开热点 '${SSID}'${NC}"
+	echo -e " ${YELLOW}热点运行中每 ${PROBE} 分钟探测一次, WiFi恢复则自动切回${NC}"
+	echo "--------------------------------------"
+	echo "1. 开启/关闭"
+	echo "2. 修改热点名称"
+	echo "3. 修改热点密码"
+	echo "4. 修改超时阈值 (分钟)"
+	echo "5. 修改检测间隔 (分钟)"
+	echo "6. 修改探测间隔 (分钟)"
+	echo "7. 查看日志"
+	echo "8. 一键测试 (手动触发一次检测)"
+	echo "0. 返回"
+	echo -e "${CYAN}======================================${NC}"
+	read -p "请输入选项: " ah_choice
+
+	_save_config() {
+		mkdir -p "$CONFIG_DIR"
+		cat > "$CONFIG_FILE" << EOF
+ENABLED=$ENABLED
+HOTSPOT_SSID="$SSID"
+HOTSPOT_PASS="$PASS"
+TIMEOUT_MIN=$TIMEOUT
+CHECK_INTERVAL=$INTERVAL
+PROBE_INTERVAL=$PROBE
+EOF
+	}
+
+	_write_daemon() {
+		cat > "$SCRIPT_FILE" << 'AHEOF'
+#!/bin/bash
+# WiFi Auto-Hotspot Daemon — 无已保存WiFi连接时自动开启热点
+# 热点运行时定期探测已保存WiFi, 恢复后自动切回
+
+exec 200>/tmp/wifi_auto_hotspot.lock
+flock -n 200 || exit 0
+
+CONFIG_FILE="/etc/hinaswifi/auto_hotspot.conf"
+STATE_FILE="/tmp/wifi_auto_hotspot_state"
+LOG_FILE="/var/log/wifi_auto_hotspot.log"
+
+ENABLED=0
+HOTSPOT_SSID="HINAS"
+HOTSPOT_PASS="88888888"
+TIMEOUT_MIN=10
+CHECK_INTERVAL=2
+PROBE_INTERVAL=6
+
+[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
+[ "$ENABLED" != "1" ] && exit 0
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
+
+# 日志轮转
+if [ -f "$LOG_FILE" ]; then
+	_lines=$(wc -l < "$LOG_FILE" 2>/dev/null)
+	[ "$_lines" -gt 500 ] && tail -n 250 "$LOG_FILE" > "$LOG_FILE.tmp" 2>/dev/null && mv "$LOG_FILE.tmp" "$LOG_FILE"
+fi
+
+detect_iface() {
+	local IF
+	IF=$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null | awk -F: '$2=="wifi" {print $1}' | grep -v 'p2p' | head -n 1)
+	[ -z "$IF" ] && IF=$(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -E '^wl|^wlan' | head -n 1)
+	[ -z "$IF" ] && IF="wlan0"
+	echo "$IF"
+}
+
+# 是否已连接WiFi (客户端模式, 非热点)
+is_wifi_connected() {
+	local IF; IF=$(detect_iface)
+	local STATE; STATE=$(nmcli -t -f DEVICE,STATE dev status 2>/dev/null | grep "^${IF}:" | cut -d: -f2)
+	[ "$STATE" != "connected" ] && [ "$STATE" != "connecting" ] && return 1
+	# 排除AP模式
+	local CONN; CONN=$(nmcli -t -f DEVICE,CONNECTION dev status 2>/dev/null | grep "^${IF}:" | cut -d: -f2)
+	if [ -n "$CONN" ] && [ "$CONN" != "--" ]; then
+		local MODE; MODE=$(nmcli -t -f 802-11-wireless.mode con show "$CONN" 2>/dev/null | cut -d: -f2)
+		[ "$MODE" = "ap" ] && return 1
+	fi
+	return 0
+}
+
+# 获取正在运行的热点连接名
+get_hotspot_conn() {
+	local name mode
+	while IFS=: read -r name _type active; do
+		[ "$active" = "yes" ] || continue
+		mode=$(nmcli -t -f 802-11-wireless.mode con show "$name" 2>/dev/null | cut -d: -f2)
+		[ "$mode" = "ap" ] && echo "$name" && return
+	done < <(nmcli -t -f NAME,TYPE,ACTIVE connection 2>/dev/null | grep ':802-11-wireless:')
+}
+
+start_hotspot() {
+	local IF; IF=$(detect_iface)
+	nmcli device wifi hotspot ifname "$IF" ssid "$HOTSPOT_SSID" password "$HOTSPOT_PASS" >/dev/null 2>&1
+	if [ $? -eq 0 ]; then
+		log "✅ 热点已开启: $HOTSPOT_SSID (接口=$IF)"
+	else
+		log "❌ 热点开启失败"
+	fi
+}
+
+stop_hotspot() {
+	local AP_CONN; AP_CONN=$(get_hotspot_conn)
+	if [ -n "$AP_CONN" ]; then
+		nmcli con down "$AP_CONN" >/dev/null 2>&1
+		log "✅ 热点已关闭: $AP_CONN"
+	fi
+}
+
+# 尝试连接所有已保存的WiFi (排除AP模式连接)
+try_saved_wifi() {
+	local SAVED
+	SAVED=$(nmcli -t -f NAME,TYPE connection show 2>/dev/null | grep ':802-11-wireless$' | cut -d: -f1)
+	[ -z "$SAVED" ] && return 1
+
+	local IF; IF=$(detect_iface)
+	nmcli device wifi rescan ifname "$IF" >/dev/null 2>&1
+	sleep 3
+
+	local conn mode
+	while IFS= read -r conn; do
+		[ -z "$conn" ] && continue
+		mode=$(nmcli -t -f 802-11-wireless.mode con show "$conn" 2>/dev/null | cut -d: -f2)
+		[ "$mode" = "ap" ] && continue
+		nmcli con up "$conn" >/dev/null 2>&1
+		if [ $? -eq 0 ]; then
+			sleep 3
+			if is_wifi_connected; then
+				log "✅ 已保存WiFi连接成功: $conn"
+				return 0
+			fi
+		fi
+	done <<< "$SAVED"
+	return 1
+}
+
+# ========== 主逻辑 ==========
+# 状态文件格式: MODE|COUNTER
+# MODE: normal / hotspot
+# COUNTER: 当前状态下累计分钟数
+
+CURRENT=$(cat "$STATE_FILE" 2>/dev/null || echo "normal|0")
+MODE=$(echo "$CURRENT" | cut -d'|' -f1)
+COUNT=$(echo "$CURRENT" | cut -d'|' -f2)
+[ -z "$MODE" ] && MODE="normal"
+[ -z "$COUNT" ] && COUNT=0
+
+if [ "$MODE" = "hotspot" ]; then
+	# --- 热点运行中 ---
+	COUNT=$((COUNT + CHECK_INTERVAL))
+
+	if [ "$COUNT" -ge "$PROBE_INTERVAL" ]; then
+		# 探测时间到: 关热点 → 尝试已保存WiFi
+		log "🔍 探测: 关闭热点, 尝试重连已保存WiFi..."
+		stop_hotspot
+		sleep 2
+
+		if try_saved_wifi; then
+			echo "normal|0" > "$STATE_FILE"
+			log "✅ WiFi已恢复, 切回正常模式"
+		else
+			log "❌ 探测失败, 无已保存WiFi可用, 重新开启热点"
+			start_hotspot
+			echo "hotspot|0" > "$STATE_FILE"
+		fi
+	else
+		echo "hotspot|$COUNT" > "$STATE_FILE"
+	fi
+else
+	# --- 正常监控中 ---
+	if is_wifi_connected; then
+		echo "normal|0" > "$STATE_FILE"
+		# 如果热点在跑(异常残留), 关掉
+		[ -n "$(get_hotspot_conn)" ] && stop_hotspot
+		exit 0
+	fi
+
+	COUNT=$((COUNT + CHECK_INTERVAL))
+
+	if [ "$COUNT" -ge "$TIMEOUT_MIN" ]; then
+		# 超时, 先最后试一次已保存WiFi
+		if try_saved_wifi; then
+			echo "normal|0" > "$STATE_FILE"
+			exit 0
+		fi
+		log "⚠ 连续 ${COUNT} 分钟无WiFi连接, 开启热点 '${HOTSPOT_SSID}'"
+		start_hotspot
+		echo "hotspot|0" > "$STATE_FILE"
+	else
+		echo "normal|$COUNT" > "$STATE_FILE"
+	fi
+fi
+AHEOF
+		chmod +x "$SCRIPT_FILE"
+	}
+
+	case $ah_choice in
+	1)
+		if [ "$ENABLED" = "1" ] && [ -n "$CRON_ENTRY" ]; then
+			# 关闭
+			crontab -l 2>/dev/null | grep -v "$SCRIPT_FILE" | crontab -
+			ENABLED=0
+			_save_config
+			# 关掉正在运行的热点
+			local AP_CONN=""
+			while IFS=: read -r _n _t _a; do
+				[ "$_a" = "yes" ] || continue
+				_m=$(nmcli -t -f 802-11-wireless.mode con show "$_n" 2>/dev/null | cut -d: -f2)
+				[ "$_m" = "ap" ] && AP_CONN="$_n"
+			done < <(nmcli -t -f NAME,TYPE,ACTIVE connection 2>/dev/null | grep ':802-11-wireless:')
+			[ -n "$AP_CONN" ] && nmcli con down "$AP_CONN" >/dev/null 2>&1
+			rm -f /tmp/wifi_auto_hotspot_state
+			echo -e "${GREEN}✅ 已关闭自动热点${NC}"
+		else
+			# 开启
+			ENABLED=1
+			_save_config
+			_write_daemon
+			(crontab -l 2>/dev/null | grep -v "$SCRIPT_FILE"; echo "*/$INTERVAL * * * * $SCRIPT_FILE") | crontab -
+			echo -e "${GREEN}✅ 已开启自动热点${NC}"
+			echo -e "${YELLOW}无WiFi连接 ${TIMEOUT} 分钟后自动开启热点 '${SSID}'${NC}"
+			echo -e "${YELLOW}手机连热点后 SSH 登录盒子, 运行 wifi 连新WiFi${NC}"
+		fi
+		sleep 3
+		;;
+	2)
+		read -p "新热点名称 (回车保持不变): " new_ssid
+		[ -z "$new_ssid" ] && new_ssid="$SSID"
+		SSID="$new_ssid"
+		_save_config
+		echo -e "${GREEN}✅ 热点名称已改为: $SSID${NC}"
+		sleep 2
+		;;
+	3)
+		read -s -p "新热点密码 (8位+): " new_pass; echo
+		if [ -n "$new_pass" ] && [ ${#new_pass} -ge 8 ]; then
+			PASS="$new_pass"
+			_save_config
+			echo -e "${GREEN}✅ 热点密码已更新${NC}"
+		else
+			echo -e "${RED}❌ 密码至少8位${NC}"
+		fi
+		sleep 2
+		;;
+	4)
+		read -p "超时阈值 (分钟, 回车保持不变): " new_timeout
+		if [[ "$new_timeout" =~ ^[1-9][0-9]*$ ]]; then
+			TIMEOUT="$new_timeout"
+			_save_config
+			echo -e "${GREEN}✅ 超时阈值已改为: $TIMEOUT 分钟${NC}"
+		else
+			echo -e "${RED}❌ 请输入正整数${NC}"
+		fi
+		sleep 2
+		;;
+	5)
+		read -p "检测间隔 (分钟, 回车保持不变): " new_interval
+		if [[ "$new_interval" =~ ^[1-9][0-9]*$ ]]; then
+			INTERVAL="$new_interval"
+			_save_config
+			# 更新 crontab
+			if [ -n "$(crontab -l 2>/dev/null | grep "$SCRIPT_FILE")" ]; then
+				crontab -l 2>/dev/null | grep -v "$SCRIPT_FILE" | crontab -
+				(crontab -l 2>/dev/null; echo "*/$INTERVAL * * * * $SCRIPT_FILE") | crontab -
+			fi
+			echo -e "${GREEN}✅ 检测间隔已改为: $INTERVAL 分钟${NC}"
+		else
+			echo -e "${RED}❌ 请输入正整数${NC}"
+		fi
+		sleep 2
+		;;
+	6)
+		read -p "探测间隔 (分钟, 回车保持不变): " new_probe
+		if [[ "$new_probe" =~ ^[1-9][0-9]*$ ]]; then
+			PROBE="$new_probe"
+			_save_config
+			echo -e "${GREEN}✅ 探测间隔已改为: $PROBE 分钟${NC}"
+		else
+			echo -e "${RED}❌ 请输入正整数${NC}"
+		fi
+		sleep 2
+		;;
+	7)
+		clear
+		echo -e "${CYAN}===== 自动热点日志 (最后50行) =====${NC}"
+		if [ -f /var/log/wifi_auto_hotspot.log ]; then
+			tail -n 50 /var/log/wifi_auto_hotspot.log
+		else
+			echo -e "${YELLOW}暂无日志${NC}"
+		fi
+		echo "--------------------------------------"
+		local STATE_STR
+		STATE_STR=$(cat /tmp/wifi_auto_hotspot_state 2>/dev/null || echo "normal|0")
+		echo "当前状态: $STATE_STR"
+		read -n 1 -s -r -p "按任意键返回..."
+		;;
+	8)
+		echo -e "${YELLOW}手动触发检测...${NC}"
+		bash "$SCRIPT_FILE"
+		sleep 1
+		local STATE_STR
+		STATE_STR=$(cat /tmp/wifi_auto_hotspot_state 2>/dev/null || echo "normal|0")
+		echo -e "检测后状态: ${GREEN}$STATE_STR${NC}"
+		sleep 3
+		;;
+	0) return ;;
+	esac
+}
+
 while true; do
  clear
  echo -e "${CYAN}=================================================${NC}"
@@ -1423,11 +1765,12 @@ while true; do
  echo -e "15. ${GREEN}省电模式开关${NC}"
  echo -e "16. ${GREEN}IPv6 模式开关${NC} (v2.1.0)"
  echo -e "17. ${GREEN}BSSID 锁定/解除${NC} (v2.2.0)"
+ echo -e "18. ${GREEN}自动热点救生${NC} (v2.3.0)"
  echo " 0. 退出"
  echo -e "${CYAN}-------------------------------------------------${NC}"
- echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v2.2.0: ping-only + 省电 + IPv6 + BSSID锁定"
+ echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v2.3.0: ping-only + 省电 + IPv6 + BSSID锁定 + 自动热点"
  echo -e "${CYAN}=================================================${NC}"
- read -p "选项 [0-17]: " choice
+ read -p "选项 [0-18]: " choice
  case $choice in
  1) install_driver ;;
  2) connect_wifi ;;
@@ -1446,6 +1789,7 @@ while true; do
  15) toggle_power_save ;;
  16) toggle_ipv6 ;;
  17) toggle_bssid_lock ;;
+ 18) toggle_auto_hotspot ;;
  0) clear; echo "已退出。"; exit 0 ;;
  *) echo -e "${RED}无效${NC}"; sleep 1 ;;
  esac
