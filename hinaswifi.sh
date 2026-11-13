@@ -666,7 +666,7 @@ run_speedtest() {
  echo -e "${YELLOW}${label}...${NC}"
  local s
  for url in "$@"; do
- s=$(curl -o /dev/null -s -w "%{speed_download}" --connect-timeout 10 --max-time 30 "$url" 2>/dev/null)
+ s=$(curl -L -o /dev/null -s -w "%{speed_download}" --connect-timeout 10 --max-time 30 "$url" 2>/dev/null)
  if [ -n "$s" ] && [ "$s" != "0" ] && [ "$s" != "0.000" ]; then
  break
  fi
@@ -680,10 +680,10 @@ run_speedtest() {
  }
 
  case $st_choice in
- 1) _test_urls "国内测速" "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" "https://dldir1v6.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" "http://mirrors.aliyun.com/centos/timestamp.txt" ;;
+ 1) _test_urls "国内测速" "https://mirrors.huaweicloud.com/centos/7/isos/x86_64/CentOS-7-x86_64-Minimal-2009.iso" "https://mirrors.huaweicloud.com/centos/7/isos/x86_64/CentOS-7-x86_64-NetInstall-2009.iso" "https://mirrors.huaweicloud.com/centos/7/isos/x86_64/CentOS-7-x86_64-DVD-2009.iso" ;;
  2) _test_urls "国外测速" "https://speed.cloudflare.com/__down?bytes=10000000" "http://speedtest.tele2.net/10MB.zip" ;;
  3)
- _test_urls "国内测速" "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" "https://dldir1v6.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" "http://mirrors.aliyun.com/centos/timestamp.txt"
+ _test_urls "国内测速" "https://mirrors.huaweicloud.com/centos/7/isos/x86_64/CentOS-7-x86_64-Minimal-2009.iso" "https://mirrors.huaweicloud.com/centos/7/isos/x86_64/CentOS-7-x86_64-NetInstall-2009.iso" "https://mirrors.huaweicloud.com/centos/7/isos/x86_64/CentOS-7-x86_64-DVD-2009.iso"
  _test_urls "国外测速" "https://speed.cloudflare.com/__down?bytes=10000000" "http://speedtest.tele2.net/10MB.zip" ;;
  *) echo -e "${RED}无效${NC}" ;;
  esac
@@ -2260,7 +2260,7 @@ while true; do
    echo -e "${CYAN}========== 网络连接 ==========${NC}"
    echo " 1. 扫描并连接 WiFi"
    echo " 2. WiFi 密码查看"
-   local _BSSID_LOCK=""; nmcli -t -f 802-11-wireless.bssid con show "$(nmcli -t -f NAME,ACTIVE con show 2>/dev/null | grep :yes | cut -d: -f1)" 2>/dev/null | cut -d: -f2 | grep -q . && _BSSID_LOCK="${GREEN}"
+   _BSSID_LOCK=""; nmcli -t -f 802-11-wireless.bssid con show "$(nmcli -t -f NAME,ACTIVE con show 2>/dev/null | grep :yes | cut -d: -f1)" 2>/dev/null | cut -d: -f2 | grep -q . && _BSSID_LOCK="${GREEN}"
    [ -n "$_BSSID_LOCK" ] && echo -e " 3. ${_BSSID_LOCK}BSSID 锁定/解除${NC} 🔒已锁定" || echo " 3. BSSID 锁定/解除"
    echo " 4. 多网卡优先级"
    echo " 5. 多 WiFi 优先级"
@@ -2283,7 +2283,7 @@ while true; do
    echo -e "${CYAN}========== 热点与救生 ==========${NC}"
    echo " 1. WiFi 热点 (AP模式)"
    echo " 2. 热点客户端列表"
-   local _AH=""; crontab -l 2>/dev/null | grep -q "wifi_auto_hotspot.sh" && _AH="${GREEN}"
+   _AH=""; crontab -l 2>/dev/null | grep -q "wifi_auto_hotspot.sh" && _AH="${GREEN}"
    [ -n "$_AH" ] && echo -e " 3. ${_AH}自动热点救生${NC} ▶已开启" || echo " 3. 自动热点救生"
    echo " 0. 返回主菜单"
    echo -e "${CYAN}================================${NC}"
@@ -2300,12 +2300,12 @@ while true; do
   while true; do
    clear
    echo -e "${CYAN}======== 防掉线守护 ========${NC}"
-   local _WD=""; crontab -l 2>/dev/null | grep -q "wifi_watchdog.sh" && _WD="${GREEN}"
+   _WD=""; crontab -l 2>/dev/null | grep -q "wifi_watchdog.sh" && _WD="${GREEN}"
    [ -n "$_WD" ] && echo -e " 1. ${_WD}守护开关${NC} ▶已开启" || echo " 1. 守护开关 (watchdog v3.5)"
    echo " 2. 断网统计面板"
-   local _PS=""; local _IF=$(get_wifi_iface); iw dev "$_IF" get power_save 2>/dev/null | grep -q on && _PS="${GREEN}"
+   _PS=""; _IF=$(get_wifi_iface); iw dev "$_IF" get power_save 2>/dev/null | grep -q on && _PS="${GREEN}"
    [ -n "$_PS" ] && echo -e " 3. ${_PS}省电模式${NC} ▶已开启" || echo " 3. 省电模式开关"
-   local _RC=""; crontab -l 2>/dev/null | grep -q "wifi_scheduled_reconnect.sh" && _RC="${GREEN}"
+   _RC=""; crontab -l 2>/dev/null | grep -q "wifi_scheduled_reconnect.sh" && _RC="${GREEN}"
    [ -n "$_RC" ] && echo -e " 4. ${_RC}定时重连${NC} ▶已开启" || echo " 4. 定时重连"
    echo " 0. 返回主菜单"
    echo -e "${CYAN}============================${NC}"
@@ -2324,7 +2324,7 @@ while true; do
    clear
    echo -e "${CYAN}========== 网络配置 ==========${NC}"
    echo " 1. 配置静态/动态 IP"
-   local _IF6=$(get_wifi_iface); local _IPV6=""; [ "$(nmcli -t -f ipv6.method con show "$(nmcli -t -f NAME,ACTIVE con show 2>/dev/null | grep :yes | cut -d: -f1)" 2>/dev/null | cut -d: -f2)" = "ignore" ] && _IPV6="${GREEN}"
+   _IF6=$(get_wifi_iface); _IPV6=""; [ "$(nmcli -t -f ipv6.method con show "$(nmcli -t -f NAME,ACTIVE con show 2>/dev/null | grep :yes | cut -d: -f1)" 2>/dev/null | cut -d: -f2)" = "ignore" ] && _IPV6="${GREEN}"
    [ -n "$_IPV6" ] && echo -e " 2. ${_IPV6}IPv6 模式${NC} ▶ignore" || echo " 2. IPv6 模式开关"
    echo " 3. IPv6 详细面板"
    echo " 4. DNS 测速优化"
