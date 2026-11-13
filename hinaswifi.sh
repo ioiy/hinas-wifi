@@ -63,6 +63,47 @@ get_wifi_driver() {
  [ -z "$DRV" ] && DRV="rtl8188fu"
  echo "$DRV"
 }
+# iw 底层扫描 — 比 nmcli 更可靠, 能在已连接状态下扫到更多 AP
+# 输出格式: BSSID:SSID:SIGNAL:FREQ
+scan_wifi_iw() {
+ local IF=${1:-$(get_wifi_iface)}
+ timeout 15 iw dev "$IF" scan 2>/dev/null | awk '
+ /^BSS / {
+     if (bssid != "") {
+         gsub(/\\x00/, "", ssid)
+         if (ssid != "" && signal != "" && freq != "")
+             print bssid ":" ssid ":" signal ":" freq
+     }
+     bssid=$2
+     gsub(/\\(.*\\)/, "", bssid)
+     ssid=""; signal=""; freq=""
+ }
+ /\\tSSID:/ { sub(/.*SSID: /, ""); ssid=$0 }
+ /\\tsignal:/ { signal=$2 }
+ /\\tfreq:/ { freq=$2 }
+ END {
+     if (bssid != "") {
+         gsub(/\\x00/, "", ssid)
+         if (ssid != "" && signal != "" && freq != "")
+             print bssid ":" ssid ":" signal ":" freq
+     }
+ }
+ '
+}
+
+# 合并扫描: nmcli + iw, 去重
+scan_wifi_all() {
+ local IF=${1:-$(get_wifi_iface)}
+ local TMPFILE; TMPFILE=$(mktemp)
+ nmcli -t -f BSSID,SSID,SIGNAL,FREQ dev wifi list 2>/dev/null > "$TMPFILE"
+ scan_wifi_iw "$IF" >> "$TMPFILE"
+ sort -u "$TMPFILE" | awk -F: '{
+     bssid=substr($0,1,17)
+     if (!(bssid in seen)) { seen[bssid]=1; print $0 }
+ }'
+ rm -f "$TMPFILE"
+}
+
 
 # 获取 WiFi 信号强度 (dBm)
 get_signal_strength() {
@@ -729,6 +770,7 @@ connect_wifi() {
  echo "扫描中..."
  # 多次扫描提高命中率 (RTL8188FU 小芯片一次扫不全同名 SSID)
  timeout 10 nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1; sleep 3
+ timeout 10 nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1; sleep 3
  timeout 10 nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1; sleep 2
  timeout 15 nmcli device wifi list ifname "$WIFI_IF"
  echo "--------------------------------------"
@@ -1317,7 +1359,6 @@ toggle_bssid_lock() {
  read -n 1 -s -r -p "按任意键返回..."; return
  fi
 
- # 当前锁定状态
  LOCKED_BSSID=$(nmcli -t -f 802-11-wireless.bssid con show "$CONN" 2>/dev/null | cut -d: -f2)
  CUR_BSSID=$(iw dev "$WIFI_IF" link 2>/dev/null | grep -oi "Connected to [0-9a-f:]*" | awk '{print $3}')
  CUR_SSID=$(nmcli -t -f 802-11-wireless.ssid con show "$CONN" 2>/dev/null | cut -d: -f2)
@@ -1326,7 +1367,6 @@ toggle_bssid_lock() {
  echo "--------------------------------------"
 
  if [ -n "$LOCKED_BSSID" ] && [ "$LOCKED_BSSID" != "--" ]; then
- # 已锁定
  echo -e "当前状态: ${GREEN}🔒 已锁定${NC}"
  echo -e "锁定 BSSID: ${GREEN}$LOCKED_BSSID${NC}"
  if [ -n "$CUR_BSSID" ]; then
@@ -1348,7 +1388,6 @@ toggle_bssid_lock() {
  echo -e " 设备可能漫游到其他同名 AP, 导致频繁 deauth"
  ;;
  2)
- # 跳到下面的选择逻辑
  LOCKED_BSSID=""
  ;;
  0) return ;;
@@ -1356,7 +1395,6 @@ toggle_bssid_lock() {
  fi
 
  if [ -z "$LOCKED_BSSID" ] || [ "$LOCKED_BSSID" = "--" ]; then
- # 未锁定 — 扫描同名 SSID 的 AP
  echo -e "当前状态: ${YELLOW}🔓 未锁定${NC}"
  if [ -n "$CUR_BSSID" ]; then
  echo -e "当前连接: ${GREEN}$CUR_BSSID${NC}"
@@ -1365,17 +1403,11 @@ toggle_bssid_lock() {
  echo -e "扫描同名 SSID 的 AP..."
  echo ""
 
- # 多次扫描提高命中率 (RTL8188FU 小芯片一次扫不全)
- timeout 10 nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1
- sleep 3
- timeout 10 nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1
- sleep 2
+ # 双重扫描: nmcli + iw 底层扫描
+ echo -e "${YELLOW}正在扫描 (nmcli + iw 双重扫描)...${NC}"
+ timeout 10 nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1; sleep 3
 
- # 扫描并列出同名 SSID 的 AP
- # 修复: BSSID 含冒号, 不能用 IFS=: 拆分
- # nmcli -t 输出格式: BSSID:SSID:SIGNAL:FREQ
- # BSSID 固定 17 字符 (XX:XX:XX:XX:XX:XX), 后面跟 :SSID:SIGNAL:FREQ
- AP_LIST=$(nmcli -t -f BSSID,SSID,SIGNAL,FREQ dev wifi list 2>/dev/null)
+ AP_LIST=$(scan_wifi_all "$WIFI_IF")
 
  AP_COUNT=0
  AP_BSSIDS=()
@@ -1384,28 +1416,24 @@ toggle_bssid_lock() {
  if [ -n "$AP_LIST" ]; then
  while IFS= read -r line; do
  [ -z "$line" ] && continue
- # BSSID 固定前 17 字符
  line_bssid="${line:0:17}"
- rest="${line:18}"  # 跳过 BSSID 和后面的 :
+ rest="${line:18}"
  line_ssid="${rest%%:*}"
  rest2="${rest#*:}"
  line_signal="${rest2%%:*}"
  line_freq="${rest2#*:}"
 
- # 只显示同名 SSID
  [ "$line_ssid" != "$CUR_SSID" ] && continue
 
  AP_COUNT=$((AP_COUNT + 1))
  AP_BSSIDS[$AP_COUNT]=$line_bssid
 
- # 频率转信道
  CH=""
  if [[ "$line_freq" =~ ^[0-9]+$ ]]; then
  CH=$(( (line_freq / 1000 - 2412) / 5 + 1 ))
  [ "$line_freq" -gt 5000 ] 2>/dev/null && CH=$(( (line_freq / 1000 - 5000) / 5 + 36 ))
  fi
 
- # 标记当前连接
  MARK=""
  [ "$line_bssid" = "$CUR_BSSID" ] && MARK=" ← 当前"
 
@@ -1423,7 +1451,7 @@ toggle_bssid_lock() {
  echo ""
  echo -e "${YELLOW}建议: 锁定信号最强的 AP (序号 1)${NC}"
  else
- echo -e "${YELLOW}⚠ 扫描未找到同名 AP (USB WiFi 芯片扫描能力有限)${NC}"
+ echo -e "${YELLOW}⚠ 扫描未找到同名 AP${NC}"
  echo -e "${YELLOW}  可以直接手动输入 MAC 地址绑定${NC}"
  echo ""
  fi
@@ -1440,14 +1468,11 @@ toggle_bssid_lock() {
  fi
 
  if [ "$bssid_choice" = "m" ] || [ "$bssid_choice" = "M" ]; then
- # 手动输入 MAC 地址
  echo -e "${CYAN}请输入要锁定的 MAC 地址 (BSSID)${NC}"
  echo -e "格式: xx:xx:xx:xx:xx:xx (小写大写均可)"
  echo -e "当前连接: ${GREEN}$CUR_BSSID${NC}"
  read -p "MAC 地址: " TARGET_BSSID
- # 转小写
  TARGET_BSSID=$(echo "$TARGET_BSSID" | tr 'A-F' 'a-f')
- # 简单校验
  if ! [[ "$TARGET_BSSID" =~ ^[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}$ ]]; then
  echo -e "${RED}❌ MAC 地址格式不对, 应为 xx:xx:xx:xx:xx:xx${NC}"
  read -n 1 -s -r -p "按任意键返回..."; return
@@ -1464,7 +1489,6 @@ toggle_bssid_lock() {
  nmcli con mod "$CONN" 802-11-wireless.bssid "$TARGET_BSSID" 2>/dev/null
  nmcli con up "$CONN" >/dev/null 2>&1
  sleep 3
- # 验证
  NEW_BSSID=$(iw dev "$WIFI_IF" link 2>/dev/null | grep -oi "Connected to [0-9a-f:]*" | awk '{print $3}')
  if [ "$NEW_BSSID" = "$TARGET_BSSID" ]; then
  echo -e "${GREEN}✅ 已锁定到 $TARGET_BSSID${NC}"
