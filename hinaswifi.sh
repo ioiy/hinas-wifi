@@ -7,9 +7,9 @@
 # v2.0.0: watchdog v3.5 ping-only + 省电模式保持开启(实测稳定) — 解决 RTL8188FU 频繁断线
 # v2.1.0: IPv6 模式开关 — NM ignore 避免路由器 IPv6 不稳定拖垮 DHCPv4
 # v2.2.0: BSSID 锁定/解除 — 双AP同名SSID环境防漫游互踢
-# v2.3.0: 自动热点救生 — 无WiFi连接时自动开热点, 热点时定期探测恢复
+# v2.3.1: 自动热点救生 — 无WiFi连接时自动开热点, 热点时定期探测恢复
 
-VERSION="2.3.0"
+VERSION="2.3.1"
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 WATCHDOG_SCRIPT="/usr/local/bin/wifi_watchdog.sh"
 KEEPALIVE_SCRIPT="/usr/local/bin/wifi_keepalive.sh"
@@ -107,7 +107,7 @@ update_script() {
  echo -e "${RED}❌ 无网络连接，无法获取更新！请先连接 WiFi 或网线。${NC}"
  sleep 3; return
  fi
- CLOUD_VERSION=$(wget -qO- "$UPDATE_URL" | grep -E '^VERSION=' | head -n 1 | cut -d'"' -f2)
+ CLOUD_VERSION=$(wget -qO- "$UPDATE_URL" | grep -E "^VERSION=" | head -n 1 | cut -d\" -f2)
  if [ -z "$CLOUD_VERSION" ]; then
  echo -e "${RED}❌ 获取云端版本失败。${NC}"
  sleep 3; return
@@ -115,25 +115,30 @@ update_script() {
  echo -e "当前本地版本: ${CYAN}v${VERSION}${NC}"
  echo -e "发现云端版本: ${GREEN}v${CLOUD_VERSION}${NC}"
  echo "--------------------------------------"
+ local FORCE=0
  if [ "$VERSION" == "$CLOUD_VERSION" ]; then
- echo -e "${GREEN}✅ 当前已是最新版本，无需更新！${NC}"
- read -n 1 -s -r -p "按任意键返回主菜单..."; return
- fi
- read -p "是否确认更新到 v${CLOUD_VERSION}？(y/n): " confirm
+ echo -e "${GREEN}✅ 当前已是最新版本${NC}"
+ echo "--------------------------------------"
+ echo "1. 强制替换 (同版本覆盖, 用于修复热更新)"
+ echo "0. 返回主菜单"
+ read -p "选项: " upd_choice
+ [ "$upd_choice" != "1" ] && return
+ FORCE=1
+ echo -e "${YELLOW}⚠ 强制替换: 用云端代码覆盖本地${NC}"
+ else
+ read -p "是否更新到 v${CLOUD_VERSION}？(y/n): " confirm
  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
  echo -e "${YELLOW}已取消更新。${NC}"; sleep 1; return
  fi
+ fi
  echo -e "${GREEN}正在下载最新代码...${NC}"
  if wget -q -O /tmp/hinaswifi.sh.tmp "$UPDATE_URL"; then
- # 校验下载的文件是否合法 (必须包含 VERSION= 行)
- if ! grep -q '^VERSION=' /tmp/hinaswifi.sh.tmp; then
+ if ! grep -q "^VERSION=" /tmp/hinaswifi.sh.tmp; then
  echo -e "${RED}❌ 下载的文件不合法(缺少VERSION行)，已放弃更新。${NC}"
  rm -f /tmp/hinaswifi.sh.tmp; sleep 3; return
  fi
- # 备份当前版本
  cp "$SCRIPT_PATH" "${SCRIPT_PATH}.bak" 2>/dev/null
  echo -e "${YELLOW}已备份当前版本到 ${SCRIPT_PATH}.bak${NC}"
- # 覆盖并重启
  cat /tmp/hinaswifi.sh.tmp > "$SCRIPT_PATH"
  chmod +x "$SCRIPT_PATH"
  rm -f /tmp/hinaswifi.sh.tmp
@@ -645,55 +650,54 @@ run_speedtest() {
  echo -e "${CYAN}======================================${NC}"
  echo -e "${CYAN} 网络测速 ${NC}"
  echo -e "${CYAN}======================================${NC}"
- echo -e "${YELLOW}下载测速 (100MB)...${NC}"
+ echo "1. 国内测速 (腾讯/阿里 CDN)"
+ echo "2. 国外测速 (Cloudflare/tele2)"
+ echo "3. 双向对比 (国内+国外)"
+ echo "0. 返回"
+ read -p "选项: " st_choice
+ [ "$st_choice" = "0" ] && return
+ [ -z "$st_choice" ] && st_choice="1"
  echo "--------------------------------------"
- local speed
- speed=$(curl -o /dev/null -s -w "%{speed_download}" --connect-timeout 10 --max-time 60 \
- http://speedtest.tele2.net/100MB.zip 2>/dev/null)
- if [ -n "$speed" ] && [ "$speed" != "0" ]; then
- local mbps
- mbps=$(echo "scale=2; $speed / 125000" | bc 2>/dev/null || echo "N/A")
- echo -e "下载速度: ${GREEN}${mbps} Mbps${NC}"
- echo -e "原始速度: ${CYAN}${speed} bytes/s${NC}"
- else
- echo -e "${RED}❌ 测速失败, 尝试备用 (10MB)...${NC}"
- wget -O /dev/null http://speedtest.tele2.net/10MB.zip --show-progress 2>/dev/null
- fi
- echo "--------------------------------------"
- read -n 1 -s -r -p "按任意键返回..."
-}
 
-toggle_hotspot() {
- clear
- echo -e "${CYAN}======================================${NC}"
- echo -e "${CYAN} WiFi 热点 ${NC}"
- echo -e "${CYAN}======================================${NC}"
- WIFI_IF=$(get_wifi_iface)
- echo "1.开启 2.关闭 0.返回"
- read -p "选项: " hs
- case $hs in
- 1)
- read -p "SSID: " ssid; [ -z "$ssid" ] && return
- read -s -p "密码(8位+): " pwd; echo
- [ ${#pwd} -lt 8 ] && return
- nmcli device wifi hotspot ifname "$WIFI_IF" ssid "$ssid" password "$pwd"
- [ $? -eq 0 ] && echo -e "${GREEN}✅ $ssid${NC}" || echo -e "${RED}❌ 失败${NC}"
- ;;
- 2)
- # 只关闭 AP/hotspot 连接, 不关闭正常的 WiFi client 连接
- local AP_CONN
- AP_CONN=$(nmcli -t -f NAME,TYPE,ACTIVE connection 2>/dev/null | awk -F: '$3=="yes" && $2=="802-11-wireless" {print $1}' | while read -r name; do
- mode=$(nmcli -t -f 802-11-wireless.mode con show "$name" 2>/dev/null | cut -d: -f2)
- [ "$mode" = "ap" ] && echo "$name"
- done | head -1)
- if [ -n "$AP_CONN" ]; then
- nmcli con down "$AP_CONN" >/dev/null 2>&1 && echo -e "${GREEN}✅ 已关闭热点 ($AP_CONN)${NC}" || echo -e "${RED}❌ 关闭失败${NC}"
- else
- echo -e "${YELLOW}未找到活跃的热点连接${NC}"
+ local speed mbps
+
+ _test_urls() {
+ local label="$1"; shift
+ echo -e "${YELLOW}${label}...${NC}"
+ local s
+ for url in "$@"; do
+ s=$(curl -o /dev/null -s -w "%{speed_download}" --connect-timeout 10 --max-time 30 "$url" 2>/dev/null)
+ if [ -n "$s" ] && [ "$s" != "0" ] && [ "$s" != "0.000" ]; then
+ break
  fi
- ;;
- 0) return ;;
+ done
+ if [ -n "$s" ] && [ "$s" != "0" ] && [ "$s" != "0.000" ]; then
+ mbps=$(awk "BEGIN{printf "%.2f", $s / 125000}")
+ echo -e "  ${label}: ${GREEN}${mbps} Mbps${NC}"
+ else
+ echo -e "  ${label}: ${RED}❌ 不可达${NC}"
+ fi
+ }
+
+ case $st_choice in
+ 1) _test_urls "国内测速" 
+ "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" 
+ "https://dldir1v6.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" 
+ "http://mirrors.aliyun.com/centos/timestamp.txt" ;;
+ 2) _test_urls "国外测速" 
+ "https://speed.cloudflare.com/__down?bytes=10000000" 
+ "http://speedtest.tele2.net/10MB.zip" ;;
+ 3)
+ _test_urls "国内测速" 
+ "https://dldir1.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" 
+ "https://dldir1v6.qq.com/qqfile/qq/QQNT/Windows/QQ_9.9.9_240425_x64_01.exe" 
+ "http://mirrors.aliyun.com/centos/timestamp.txt"
+ _test_urls "国外测速" 
+ "https://speed.cloudflare.com/__down?bytes=10000000" 
+ "http://speedtest.tele2.net/10MB.zip" ;;
+ *) echo -e "${RED}无效${NC}" ;;
  esac
+ echo "--------------------------------------"
  read -n 1 -s -r -p "按任意键返回..."
 }
 
@@ -733,8 +737,8 @@ connect_wifi() {
  CURRENT_SSID=$(nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null | grep '^yes' | cut -d: -f2 | head -1)
  [ -n "$CURRENT_SSID" ] && echo -e "已连接: ${GREEN}$CURRENT_SSID${NC}" || echo -e "${RED}未连接${NC}"
  echo "扫描中..."
- nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1; sleep 2
- nmcli device wifi list ifname "$WIFI_IF"
+ timeout 10 nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1; sleep 2
+ timeout 15 nmcli device wifi list ifname "$WIFI_IF"
  echo "--------------------------------------"
  read -p "WiFi名称(回车返回): " ssid; [ -z "$ssid" ] && return
  read -s -p "密码(无密码回车): " password; echo
@@ -752,6 +756,22 @@ connect_wifi() {
  # v2.1.0: 默认设 IPv6=ignore (NM不管IPv6, 内核自己处理RA), 避免路由器IPv6不稳定拖垮DHCPv4
  [ -n "$CONN_TMP" ] && nmcli con mod "$CONN_TMP" ipv6.method ignore 2>/dev/null
  sysctl -w net.ipv6.conf.${WIFI_IF}.accept_ra=1 >/dev/null 2>&1
+ # v2.3.1: 连接后自动验证连通性
+ echo -e "${YELLOW}正在验证连通性...${NC}"
+ sleep 3
+ local GW; GW=$(ip route 2>/dev/null | awk "/default/ {print $3}" | head -1)
+ local NET_OK=0
+ if [ -n "$GW" ]; then
+ ping -c 2 -W 2 "$GW" >/dev/null 2>&1 && { echo -e "网关($GW): ${GREEN}✅${NC}"; NET_OK=1; } || echo -e "网关($GW): ${RED}❌${NC}"
+ else
+ echo -e "${RED}❌ 未获取到网关${NC}"
+ fi
+ ping -c 2 -W 3 223.5.5.5 >/dev/null 2>&1 && echo -e "外网: ${GREEN}✅${NC}" || { echo -e "外网: ${RED}❌ (DNS/外网不通)${NC}"; NET_OK=0; }
+ if [ "$NET_OK" = "1" ]; then
+ echo -e "${GREEN}✅ 连接验证通过${NC}"
+ else
+ echo -e "${YELLOW}⚠ 连接已建立但连通性异常, 可能需要换信道或重试${NC}"
+ fi
  # 持久化 accept_ra (重启后生效)
  echo "net.ipv6.conf.${WIFI_IF}.accept_ra=1" > /etc/sysctl.d/99-hinaswifi-ipv6.conf 2>/dev/null
  else
@@ -784,15 +804,14 @@ dns_optimize() {
  [ -z "$T1" ] && { echo -e " $NAME ($IP): ${RED}无响应${NC}"; continue; }
  T2=$(ping -c 1 -W 2 "$IP" 2>/dev/null | grep -oP 'time=\K[0-9.]+')
  T3=$(ping -c 1 -W 2 "$IP" 2>/dev/null | grep -oP 'time=\K[0-9.]+')
- AVG=$(echo "scale=1; ($T1+$T2+$T3)/3" | bc 2>/dev/null || echo "$T1")
+ AVG=$(awk "BEGIN{printf "%.1f", ($T1+$T2+$T3)/3}")
  printf " %-12s (%s): %6s ms\n" "$NAME" "$IP" "$AVG"
  if [ -n "$AVG" ]; then
- CMP=$(echo "$AVG < $BEST_TIME" | bc 2>/dev/null)
- if [ "$CMP" = "1" ]; then
- BEST_TIME=$AVG
- BEST_DNS="$IP"
- BEST_NAME="$NAME"
- fi
+		if awk "BEGIN{exit !($AVG < $BEST_TIME)}"; then
+			BEST_TIME=$AVG
+			BEST_DNS="$IP"
+			BEST_NAME="$NAME"
+		fi
  fi
  done
  echo "--------------------------------------"
@@ -823,7 +842,7 @@ channel_analysis() {
  echo -e "${CYAN}======================================${NC}"
  WIFI_IF=$(get_wifi_iface)
  echo -e "${YELLOW}正在扫描附近 WiFi...${NC}"
- nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1
+ timeout 10 nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1
  sleep 3
  SCAN=$(nmcli -t -f SSID,CHAN,SIGNAL dev wifi list ifname "$WIFI_IF" 2>/dev/null)
  if [ -z "$SCAN" ]; then
@@ -902,12 +921,14 @@ backup_restore() {
  /tmp/wifi_crontab_backup.txt 2>/dev/null
  [ -f "$WATCHDOG_SCRIPT" ] && tar rf "$TMP_TAR" "$WATCHDOG_SCRIPT" 2>/dev/null
  [ -f "$KEEPALIVE_SCRIPT" ] && tar rf "$TMP_TAR" "$KEEPALIVE_SCRIPT" 2>/dev/null
+ [ -f "$AUTO_HOTSPOT_SCRIPT" ] && tar rf "$TMP_TAR" "$AUTO_HOTSPOT_SCRIPT" 2>/dev/null
+ [ -d "/etc/hinaswifi" ] && tar rf "$TMP_TAR" /etc/hinaswifi 2>/dev/null
  gzip "$TMP_TAR" 2>/dev/null && mv "${TMP_TAR}.gz" "$BACKUP_FILE" 2>/dev/null
  nmcli -t -f NAME,TYPE,DEVICE connection show > "$BACKUP_DIR/conn_list_$TIMESTAMP.txt" 2>/dev/null
  SIZE=$(ls -la "$BACKUP_FILE" 2>/dev/null | awk '{print $5}')
  echo -e "${GREEN}✅ 备份成功${NC}"
  echo -e "文件: $BACKUP_FILE (${SIZE} bytes)"
- echo -e "内容: NM配置 + crontab + watchdog/keepalive脚本"
+ echo -e "内容: NM配置 + crontab + watchdog/keepalive + 自动热点配置"
  else
  echo -e "${RED}❌ 未找到 NetworkManager 配置目录${NC}"
  fi
@@ -1182,7 +1203,7 @@ toggle_power_save() {
  fi
  echo "--------------------------------------"
  echo "1. 关闭省电 (不建议, 可能过热/USB供电不足)"
- echo "2. ${GREEN}开启省电${NC} (推荐! RTL8188FU 省电模式稳定)"
+ echo -e "2. ${GREEN}开启省电${NC} (推荐! RTL8188FU 省电模式稳定)"
  echo "0. 返回"
  echo -e "${CYAN}======================================${NC}"
  read -p "选项: " ps_choice
@@ -1260,7 +1281,7 @@ toggle_ipv6() {
  echo -e "综合状态: ${RED}🔴 IPv6已禁用${NC}"
  fi
  echo "--------------------------------------"
- echo "1. ${GREEN}ignore (推荐)${NC} — NM不管IPv6, 内核自己处理RA"
+ echo -e "1. ${GREEN}ignore (推荐)${NC} — NM不管IPv6, 内核自己处理RA"
  echo "   IPv6能用就用, 路由器IPv6抽风不影响IPv4"
  echo "2. auto — NM主动管理IPv6 (路由器IPv6稳定时可用)"
  echo "3. disabled — 完全禁用IPv6"
@@ -1322,7 +1343,7 @@ toggle_bssid_lock() {
  echo "--------------------------------------"
  echo -e "${YELLOW}锁定后设备只认这一个 AP, 不漫游到同名 SSID 的其他 AP${NC}"
  echo ""
- echo "1. ${RED}解除锁定${NC} — 允许漫游 (不推荐, 双AP环境会互踢)"
+ echo -e "1. ${RED}解除锁定${NC} — 允许漫游 (不推荐, 双AP环境会互踢)"
  echo "0. 返回"
  echo -e "${CYAN}======================================${NC}"
  read -p "选项: " bssid_choice
@@ -1407,7 +1428,7 @@ toggle_bssid_lock() {
 toggle_auto_hotspot() {
 	clear
 	echo -e "${CYAN}======================================${NC}"
-	echo -e "${CYAN} 自动热点救生通道 v2.3.0 ${NC}"
+	echo -e "${CYAN} 自动热点救生通道 v2.3.1 ${NC}"
 	echo -e "${CYAN}======================================${NC}"
 
 	local CONFIG_DIR="/etc/hinaswifi"
@@ -1485,7 +1506,7 @@ PROBE_INTERVAL=6
 [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
 [ "$ENABLED" != "1" ] && exit 0
 
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; }
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"; logger -t wifi_auto_hotspot "$*" 2>/dev/null; }
 
 # 日志轮转
 if [ -f "$LOG_FILE" ]; then
@@ -1743,53 +1764,604 @@ AHEOF
 	esac
 }
 
+
+# --- 热点客户端列表 ---
+show_hotspot_clients() {
+	clear
+	echo -e "${CYAN}======================================${NC}"
+	echo -e "${CYAN} 热点客户端列表 ${NC}"
+	echo -e "${CYAN}======================================${NC}"
+
+	# 检查热点是否在运行
+	local AP_CONN=""
+	while IFS=: read -r _n _t _a; do
+		[ "$_a" = "yes" ] || continue
+		local _m; _m=$(nmcli -t -f 802-11-wireless.mode con show "$_n" 2>/dev/null | cut -d: -f2)
+		[ "$_m" = "ap" ] && AP_CONN="$_n"
+	done < <(nmcli -t -f NAME,TYPE,ACTIVE connection 2>/dev/null | grep ':802-11-wireless:')
+
+	if [ -z "$AP_CONN" ]; then
+		echo -e "${RED}❌ 热点未开启${NC}"
+		echo -e "${YELLOW}请先在「热点与救生」中开启热点${NC}"
+		read -n 1 -s -r -p "按任意键返回..."
+		return
+	fi
+
+	echo -e "热点名称: ${GREEN}$AP_CONN${NC}"
+	local IF; IF=$(get_wifi_iface)
+	echo -e "接口: ${GREEN}$IF${NC}"
+	echo "--------------------------------------"
+
+	# 方法1: arp 表 (最可靠)
+	local FOUND=0
+	echo -e "${CYAN}已连接设备:${NC}"
+	echo ""
+
+	# 获取热点网段
+	local HOTSPOT_IP; HOTSPOT_IP=$(nmcli -t -f IP4.ADDRESS dev show "$IF" 2>/dev/null | cut -d: -f2 | cut -d/ -f1)
+	local SUBNET=""
+	if [ -n "$HOTSPOT_IP" ]; then
+		SUBNET=$(echo "$HOTSPOT_IP" | awk -F. '{printf "%s.%s.%s", $1, $2, $3}')
+	fi
+
+	# 从 arp/neigh 表获取
+	while IFS= read -r line; do
+		local IP_ADDR MAC_ADDR
+		IP_ADDR=$(echo "$line" | awk '{print $1}')
+		MAC_ADDR=$(echo "$line" | awk '{print $2}')
+
+		# 跳过空 MAC 或自身
+		[ -z "$MAC_ADDR" ] && continue
+		[ "$MAC_ADDR" = "00:00:00:00:00:00" ] && continue
+		[ "$MAC_ADDR" = "<incomplete>" ] && continue
+
+		# 只显示热点网段的设备
+		if [ -n "$SUBNET" ]; then
+			case "$IP_ADDR" in
+				${SUBNET}.*) ;;  # 匹配, 继续
+				*) continue ;;   # 不匹配, 跳过
+			esac
+		fi
+
+		# 尝试获取主机名
+		local HOSTNAME; HOSTNAME=$(nslookup "$IP_ADDR" 2>/dev/null | grep -v "server" | grep "name" | awk '{print $4}' | sed 's/\.$//')
+		[ -z "$HOSTNAME" ] && HOSTNAME="-"
+
+		# MAC 厂商前缀
+		local VENDOR; VENDOR=$(echo "$MAC_ADDR" | cut -c1-8 | tr 'a-f' 'A-F')
+
+		printf "  %-16s %-18s %s\n" "$IP_ADDR" "$MAC_ADDR" "$HOSTNAME"
+		FOUND=$((FOUND + 1))
+	done < <(ip neigh show dev "$IF" 2>/dev/null | grep -v FAILED)
+
+	# 补充: 如果 ip neigh 没数据, 试 arp -n
+	if [ "$FOUND" -eq 0 ]; then
+		while IFS= read -r line; do
+			local IP_ADDR MAC_ADDR
+			IP_ADDR=$(echo "$line" | awk '{print $1}')
+			MAC_ADDR=$(echo "$line" | awk '{print $3}')
+			[ -z "$MAC_ADDR" ] && continue
+			[ "$MAC_ADDR" = "00:00:00:00:00:00" ] && continue
+			[ "$MAC_ADDR" = "*<incomplete>" ] && continue
+
+			if [ -n "$SUBNET" ]; then
+				case "$IP_ADDR" in
+					${SUBNET}.*) ;;
+					*) continue ;;
+				esac
+			fi
+
+			printf "  %-16s %-18s\n" "$IP_ADDR" "$MAC_ADDR"
+			FOUND=$((FOUND + 1))
+		done < <(arp -n 2>/dev/null | tail -n +2)
+	fi
+
+	echo "--------------------------------------"
+	if [ "$FOUND" -gt 0 ]; then
+		echo -e "共 ${GREEN}$FOUND${NC} 台设备连接"
+	else
+		echo -e "${YELLOW}暂无设备连接${NC}"
+	fi
+
+	echo "--------------------------------------"
+	echo "0. 返回"
+	read -n 1 -s -r -p "按任意键返回..."
+}
+
+# --- WiFi 密码查看 ---
+show_wifi_passwords() {
+	clear
+	echo -e "${CYAN}======================================${NC}"
+	echo -e "${CYAN} 已保存 WiFi 密码查看 ${NC}"
+	echo -e "${CYAN}======================================${NC}"
+
+	local IF; IF=$(get_wifi_iface)
+	local ACTIVE_SSID; ACTIVE_SSID=$(nmcli -t -f CONNECTION dev show "$IF" 2>/dev/null | cut -d: -f2)
+
+	# 列出所有已保存的 WiFi 连接 (排除 AP 模式)
+	local SAVED
+	SAVED=$(nmcli -t -f NAME,TYPE connection show 2>/dev/null | grep ':802-11-wireless$' | cut -d: -f1)
+
+	if [ -z "$SAVED" ]; then
+		echo -e "${RED}❌ 没有已保存的 WiFi 连接${NC}"
+		read -n 1 -s -r -p "按任意键返回..."
+		return
+	fi
+
+	local COUNT=0
+	echo -e "${CYAN}SSID                            密码              状态${NC}"
+	echo "--------------------------------------"
+
+	while IFS= read -r conn; do
+		[ -z "$conn" ] && continue
+
+		# 跳过 AP 模式连接
+		local MODE; MODE=$(nmcli -t -f 802-11-wireless.mode con show "$conn" 2>/dev/null | cut -d: -f2)
+		[ "$MODE" = "ap" ] && continue
+
+		# 获取 SSID (可能和连接名不同)
+		local SSID; SSID=$(nmcli -t -f 802-11-wireless.ssid con show "$conn" 2>/dev/null | cut -d: -f2)
+		[ -z "$SSID" ] && SSID="$conn"
+
+		# 获取密码
+		local PASS; PASS=$(nmcli -t -f 802-11-wireless-security.psk con show "$conn" 2>/dev/null | cut -d: -f2)
+		[ -z "$PASS" ] && PASS="(无密码/未知)"
+
+		# 获取状态
+		local STATUS
+		if [ "$conn" = "$ACTIVE_SSID" ]; then
+			STATUS="🟢 已连接"
+		else
+			STATUS="⚪ 已保存"
+		fi
+
+		# 截断 SSID 到 30 字符
+		local SSID_DISPLAY="$SSID"
+		[ ${#SSID_DISPLAY} -gt 30 ] && SSID_DISPLAY="${SSID_DISPLAY:0:28}.."
+
+		printf " %-30s %-16s %s\n" "$SSID_DISPLAY" "$PASS" "$STATUS"
+		COUNT=$((COUNT + 1))
+	done <<< "$SAVED"
+
+	echo "--------------------------------------"
+	echo -e "共 ${GREEN}$COUNT${NC} 个已保存的 WiFi"
+	echo "--------------------------------------"
+	echo "0. 返回"
+	read -n 1 -s -r -p "按任意键返回..."
+}
+
+
+# --- 一键诊断报告 ---
+diagnostic_report() {
+	clear
+	echo -e "${CYAN}======================================${NC}"
+	echo -e "${CYAN} 一键诊断报告 ${NC}"
+	echo -e "${CYAN}======================================${NC}"
+	echo -e "${YELLOW}正在收集诊断信息...${NC}"
+
+	local REPORT="/root/wifi_diagnostic_$(date +%Y%m%d_%H%M%S).txt"
+	local IF; IF=$(get_wifi_iface)
+
+	{
+		echo "=========================================="
+		echo "HiNAS WiFi 诊断报告"
+		echo "生成时间: $(date '+%Y-%m-%d %H:%M:%S')"
+		echo "脚本版本: v${VERSION}"
+		echo "=========================================="
+		echo ""
+
+		echo "===== 1. 系统信息 ====="
+		echo "主机名: $(hostname 2>/dev/null)"
+		echo "系统: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2)"
+		echo "内核: $(uname -r 2>/dev/null)"
+		echo "架构: $(uname -m 2>/dev/null)"
+		echo "运行时间: $(uptime 2>/dev/null)"
+		echo ""
+
+		echo "===== 2. WiFi 接口 ====="
+		echo "接口: $IF"
+		echo "驱动: $(get_wifi_driver 2>/dev/null)"
+		echo "MAC: $(cat /sys/class/net/$IF/address 2>/dev/null)"
+		echo "IP: $(nmcli -t -f IP4.ADDRESS dev show "$IF" 2>/dev/null | cut -d: -f2)"
+		echo "网关: $(ip route 2>/dev/null | awk '/default/ {print $3}' | head -1)"
+		echo "DNS: $(cat /etc/resolv.conf 2>/dev/null | grep nameserver | head -3)"
+		echo ""
+
+		echo "===== 3. WiFi 连接状态 ====="
+		nmcli dev status 2>/dev/null
+		echo ""
+		echo "活跃连接:"
+		nmcli -t -f NAME,TYPE,ACTIVE connection show 2>/dev/null | grep ':802-11-wireless:yes'
+		echo ""
+		echo "已保存连接:"
+		nmcli -t -f NAME,TYPE connection show 2>/dev/null | grep ':802-11-wireless'
+		echo ""
+
+		echo "===== 4. 信号强度 ====="
+		iw dev "$IF" link 2>/dev/null
+		echo ""
+
+		echo "===== 5. USB 设备 ====="
+		lsusb 2>/dev/null
+		echo ""
+
+		echo "===== 6. 网络配置 ====="
+		echo "--- /etc/resolv.conf ---"
+		cat /etc/resolv.conf 2>/dev/null
+		echo ""
+		echo "--- sysctl IPv6 ---"
+		cat /etc/sysctl.d/99-hinaswifi-ipv6.conf 2>/dev/null || echo "(无)"
+		echo ""
+
+		echo "===== 7. Crontab ====="
+		crontab -l 2>/dev/null || echo "(无)"
+		echo ""
+
+		echo "===== 8. Watchdog 日志 (最后30行) ====="
+		tail -n 30 /var/log/wifi_watchdog.log 2>/dev/null || echo "(无日志)"
+		echo ""
+
+		echo "===== 9. 断网统计 ====="
+		cat /var/log/wifi_watchdog.stats 2>/dev/null | tail -n 20 || echo "(无统计)"
+		echo ""
+
+		echo "===== 10. 自动热点日志 (最后20行) ====="
+		tail -n 20 /var/log/wifi_auto_hotspot.log 2>/dev/null || echo "(无日志)"
+		echo ""
+
+		echo "===== 11. dmesg WiFi 相关 (最后20行) ====="
+		dmesg 2>/dev/null | grep -iE 'wifi|wlan|rtl|usb.*net|deauth|disassoc' | tail -n 20
+		echo ""
+
+		echo "===== 12. NetworkManager 状态 ====="
+		nmcli general 2>/dev/null
+		echo ""
+		nmcli networking connectivity check 2>/dev/null
+		echo ""
+
+		echo "=========================================="
+		echo "诊断报告结束"
+		echo "=========================================="
+	} > "$REPORT" 2>/dev/null
+
+	local SIZE; SIZE=$(ls -la "$REPORT" 2>/dev/null | awk '{print $5}')
+	echo -e "${GREEN}✅ 诊断报告已生成${NC}"
+	echo "--------------------------------------"
+	echo -e "文件: ${GREEN}$REPORT${NC} (${SIZE} bytes)"
+	echo ""
+	echo "可用以下方式查看:"
+	echo "  cat $REPORT"
+	echo "  scp root@<盒子IP>:$REPORT ./  # 传到电脑"
+	echo "--------------------------------------"
+	echo "1. 立即查看  0. 返回"
+	read -p "选项: " dr_choice
+	[ "$dr_choice" = "1" ] && less "$REPORT" 2>/dev/null || cat "$REPORT" 2>/dev/null | head -80
+	read -n 1 -s -r -p "按任意键返回..."
+}
+
+# --- 定时重连 ---
+toggle_scheduled_reconnect() {
+	clear
+	echo -e "${CYAN}======================================${NC}"
+	echo -e "${CYAN} 定时重连 WiFi ${NC}"
+	echo -e "${CYAN}======================================${NC}"
+
+	local RECONNECT_SCRIPT="/usr/local/bin/wifi_scheduled_reconnect.sh"
+	local CRON_ENTRY; CRON_ENTRY=$(crontab -l 2>/dev/null | grep "$RECONNECT_SCRIPT")
+
+	# 读取当前设置
+	local CRON_TIME="3"  # 默认凌晨3点
+	if [ -n "$CRON_ENTRY" ]; then
+		CRON_TIME=$(echo "$CRON_ENTRY" | awk '{print $2}')
+	fi
+
+	if [ -n "$CRON_ENTRY" ]; then
+		echo -e "状态: ${GREEN}▶ 已开启${NC} (每天 ${CRON_TIME}:00 重连)"
+	else
+		echo -e "状态: ${RED}⏸ 未开启${NC}"
+	fi
+	echo "--------------------------------------"
+	echo -e "${YELLOW}定时重连: 每天指定时间自动断开重连WiFi${NC}"
+	echo -e "${YELLOW}预防长时间运行导致驱动内存泄漏${NC}"
+	echo "--------------------------------------"
+	echo "1. 开启/关闭"
+	echo "2. 设置重连时间 (当前: ${CRON_TIME}点)"
+	echo "0. 返回"
+	read -p "选项: " sr_choice
+
+	case $sr_choice in
+	1)
+		if [ -n "$CRON_ENTRY" ]; then
+			# 关闭
+			crontab -l 2>/dev/null | grep -v "$RECONNECT_SCRIPT" | crontab -
+			echo -e "${GREEN}✅ 已关闭定时重连${NC}"
+		else
+			# 生成重连脚本
+			cat > "$RECONNECT_SCRIPT" << 'RCEOF'
+#!/bin/bash
+# 定时重连 WiFi — 预防驱动内存泄漏
+IF=$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null | awk -F: '$2=="wifi" {print $1}' | head -1)
+[ -z "$IF" ] && exit 0
+CONN=$(nmcli -t -f DEVICE,CONNECTION dev status 2>/dev/null | grep "^${IF}:" | cut -d: -f2)
+[ -z "$CONN" ] || [ "$CONN" = "--" ] && exit 0
+logger -t wifi_reconnect "定时重连: $CONN"
+nmcli con down "$CONN" >/dev/null 2>&1
+sleep 2
+nmcli con up "$CONN" >/dev/null 2>&1
+RCEOF
+			chmod +x "$RECONNECT_SCRIPT"
+			(crontab -l 2>/dev/null | grep -v "$RECONNECT_SCRIPT"; echo "0 $CRON_TIME * * * $RECONNECT_SCRIPT") | crontab -
+			echo -e "${GREEN}✅ 已开启定时重连 (每天 ${CRON_TIME}:00)${NC}"
+		fi
+		sleep 3
+		;;
+	2)
+		read -p "重连时间 (小时 0-23, 回车保持不变): " new_time
+		if [[ "$new_time" =~ ^[0-9]$|^1[0-9]$|^2[0-3]$ ]]; then
+			CRON_TIME="$new_time"
+			# 如果已开启, 更新 crontab
+			if [ -n "$CRON_ENTRY" ] || [ -n "$(crontab -l 2>/dev/null | grep "$RECONNECT_SCRIPT")" ]; then
+				crontab -l 2>/dev/null | grep -v "$RECONNECT_SCRIPT" | crontab -
+				(crontab -l 2>/dev/null; echo "0 $CRON_TIME * * * $RECONNECT_SCRIPT") | crontab -
+			fi
+			echo -e "${GREEN}✅ 重连时间已设为 ${CRON_TIME}:00${NC}"
+		else
+			echo -e "${RED}❌ 请输入 0-23${NC}"
+		fi
+		sleep 2
+		;;
+	0) return ;;
+	esac
+}
+
+# --- 多 WiFi 优先级 ---
+wifi_priority() {
+	clear
+	echo -e "${CYAN}======================================${NC}"
+	echo -e "${CYAN} 多 WiFi 优先级 ${NC}"
+	echo -e "${CYAN}======================================${NC}"
+
+	local IF; IF=$(get_wifi_iface)
+
+	# 列出已保存的 WiFi (排除 AP)
+	local SAVED
+	SAVED=$(nmcli -t -f NAME,TYPE connection show 2>/dev/null | grep ':802-11-wireless$' | cut -d: -f1)
+
+	if [ -z "$SAVED" ]; then
+		echo -e "${RED}❌ 没有已保存的 WiFi 连接${NC}"
+		echo -e "${YELLOW}请先扫描连接 WiFi${NC}"
+		read -n 1 -s -r -p "按任意键返回..."
+		return
+	fi
+
+	echo -e "${YELLOW}已保存的 WiFi (按 autoconnect-priority 排序)${NC}"
+	echo "--------------------------------------"
+	echo -e "${CYAN}序号  优先级  SSID                            状态${NC}"
+	echo "--------------------------------------"
+
+	local COUNT=0
+	local CONN_ARRAY=()
+	while IFS= read -r conn; do
+		[ -z "$conn" ] && continue
+		local MODE; MODE=$(nmcli -t -f 802-11-wireless.mode con show "$conn" 2>/dev/null | cut -d: -f2)
+		[ "$MODE" = "ap" ] && continue
+
+		COUNT=$((COUNT + 1))
+		CONN_ARRAY[$COUNT]="$conn"
+
+		local PRIO; PRIO=$(nmcli -t -f connection.autoconnect-priority con show "$conn" 2>/dev/null | cut -d: -f2)
+		[ -z "$PRIO" ] && PRIO="0"
+
+		local SSID; SSID=$(nmcli -t -f 802-11-wireless.ssid con show "$conn" 2>/dev/null | cut -d: -f2)
+		[ -z "$SSID" ] && SSID="$conn"
+
+		local ACTIVE; ACTIVE=$(nmcli -t -f NAME,ACTIVE con show 2>/dev/null | grep "^${conn}:yes" | cut -d: -f2)
+		local STATUS
+		if [ "$ACTIVE" = "yes" ]; then
+			STATUS="🟢 已连接"
+		else
+			STATUS="⚪"
+		fi
+
+		local SSID_DISPLAY="$SSID"
+		[ ${#SSID_DISPLAY} -gt 30 ] && SSID_DISPLAY="${SSID_DISPLAY:0:28}.."
+
+		printf "  %-4s  %-6s  %-30s  %s\n" "$COUNT" "$PRIO" "$SSID_DISPLAY" "$STATUS"
+	done <<< "$SAVED"
+
+	echo "--------------------------------------"
+	echo -e "${YELLOW}优先级越高越先连接 (数字大的优先)${NC}"
+	echo "--------------------------------------"
+	echo "1. 设置优先级"
+	echo "2. 一键按信号强度自动排序"
+	echo "0. 返回"
+	read -p "选项: " wp_choice
+
+	case $wp_choice in
+	1)
+		read -p "输入序号 (1-$COUNT): " idx
+		if [[ "$idx" =~ ^[0-9]+$ ]] && [ "$idx" -ge 1 ] && [ "$idx" -le "$COUNT" ]; then
+			read -p "优先级 (数字, 越大越优先): " prio
+			if [[ "$prio" =~ ^-?[0-9]+$ ]]; then
+				local TARGET=${CONN_ARRAY[$idx]}
+				nmcli con mod "$TARGET" connection.autoconnect-priority "$prio" 2>/dev/null
+				echo -e "${GREEN}✅ 已设置 '$TARGET' 优先级为 $prio${NC}"
+			else
+				echo -e "${RED}❌ 请输入数字${NC}"
+			fi
+		else
+			echo -e "${RED}❌ 无效序号${NC}"
+		fi
+		sleep 2
+		;;
+	2)
+		# 按当前信号强度自动排序
+		echo -e "${YELLOW}正在扫描信号...${NC}"
+		timeout 10 nmcli device wifi rescan ifname "$IF" >/dev/null 2>&1
+		sleep 3
+
+		local PRIORITY=100
+		while IFS= read -r conn; do
+			[ -z "$conn" ] && continue
+			local MODE; MODE=$(nmcli -t -f 802-11-wireless.mode con show "$conn" 2>/dev/null | cut -d: -f2)
+			[ "$MODE" = "ap" ] && continue
+
+			local SSID; SSID=$(nmcli -t -f 802-11-wireless.ssid con show "$conn" 2>/dev/null | cut -d: -f2)
+			[ -z "$SSID" ] && continue
+
+			# 从扫描结果找信号
+			local SIG; SIG=$(nmcli -t -f SSID,SIGNAL dev wifi list 2>/dev/null | grep "^${SSID}:" | cut -d: -f2 | sort -rn | head -1)
+			if [ -n "$SIG" ]; then
+				nmcli con mod "$conn" connection.autoconnect-priority "$((SIG * 10))" 2>/dev/null
+				echo "  $SSID → 优先级 $((SIG * 10)) (信号 ${SIG})"
+			else
+				nmcli con mod "$conn" connection.autoconnect-priority "$PRIORITY" 2>/dev/null
+				echo "  $SSID → 优先级 $PRIORITY (未扫描到)"
+				PRIORITY=$((PRIORITY - 10))
+			fi
+		done <<< "$SAVED"
+		echo -e "${GREEN}✅ 已按信号强度自动排序${NC}"
+		sleep 3
+		;;
+	0) return ;;
+	esac
+}
+
 while true; do
  clear
  echo -e "${CYAN}=================================================${NC}"
  echo -e "${CYAN} HiNAS WiFi 控制面板 v${VERSION} ${NC}"
  echo -e "${CYAN}=================================================${NC}"
- echo " 1. 安装 WIFI 驱动 (RTL8188等)"
- echo " 2. 扫描并连接 WIFI"
- echo -e " 3. 防掉线守护 ${GREEN}(watchdog v3.5 ping-only)${NC}"
- echo -e " 4. 网络信息与体检 ${GREEN}(含信号强度)${NC}"
- echo " 5. 配置静态/动态 IP"
- echo " 6. WiFi 热点 (AP模式)"
- echo " 7. 多网卡优先级"
- echo " 8. 网络测速"
- echo " 9. IPv6 详细面板"
- echo -e "10. ${GREEN}在线更新${NC} (当前 v${VERSION})"
- echo "11. DNS 测速优化"
- echo "12. WiFi 信道分析"
- echo "13. 配置备份/恢复"
- echo -e "14. ${GREEN}断网统计面板${NC}"
- echo -e "15. ${GREEN}省电模式开关${NC}"
- echo -e "16. ${GREEN}IPv6 模式开关${NC} (v2.1.0)"
- echo -e "17. ${GREEN}BSSID 锁定/解除${NC} (v2.2.0)"
- echo -e "18. ${GREEN}自动热点救生${NC} (v2.3.0)"
+ echo -e " 1. ${GREEN}网络连接${NC}  (扫描/密码/BSSID/优先级/多WiFi)"
+ echo -e " 2. ${GREEN}热点与救生${NC} (热点/客户端/自动热点)"
+ echo -e " 3. ${GREEN}防掉线守护${NC} (watchdog/统计/省电/定时重连)"
+ echo -e " 4. ${GREEN}网络配置${NC}  (IP/IPv6/DNS)"
+ echo -e " 5. ${GREEN}诊断与工具${NC} (信息/测速/信道/备份/诊断报告)"
+ echo -e " 6. ${GREEN}驱动与更新${NC} (驱动/在线更新)"
  echo " 0. 退出"
  echo -e "${CYAN}-------------------------------------------------${NC}"
- echo -e " 终端输入 ${GREEN}wifi${NC} 快速打开 | v2.3.0: ping-only + 省电 + IPv6 + BSSID锁定 + 自动热点"
+ echo -e " ${GREEN}wifi${NC} 快速打开 | v2.3.1: ping-only+省电+IPv6+BSSID+自动热点+客户端+密码+优先级+定时重连+诊断报告"
  echo -e "${CYAN}=================================================${NC}"
- read -p "选项 [0-18]: " choice
+ read -p "选项 [0-6]: " choice
  case $choice in
- 1) install_driver ;;
- 2) connect_wifi ;;
- 3) toggle_watchdog ;;
- 4) show_network_info ;;
- 5) config_ip_mode ;;
- 6) toggle_hotspot ;;
- 7) config_priority ;;
- 8) run_speedtest ;;
- 9) ipv6_panel ;;
- 10) update_script ;;
- 11) dns_optimize ;;
- 12) channel_analysis ;;
- 13) backup_restore ;;
- 14) watchdog_stats ;;
- 15) toggle_power_save ;;
- 16) toggle_ipv6 ;;
- 17) toggle_bssid_lock ;;
- 18) toggle_auto_hotspot ;;
+ 1)
+  while true; do
+   clear
+   echo -e "${CYAN}========== 网络连接 ==========${NC}"
+   echo " 1. 扫描并连接 WiFi"
+   echo " 2. WiFi 密码查看"
+   echo -e " 3. ${GREEN}BSSID 锁定/解除${NC} (v2.2.0)"
+   echo " 4. 多网卡优先级"
+   echo -e " 5. ${GREEN}多 WiFi 优先级${NC} (v2.3.1)"
+   echo " 0. 返回主菜单"
+   echo -e "${CYAN}==============================${NC}"
+   read -p "选项: " sub
+   case $sub in
+   1) connect_wifi ;;
+   2) show_wifi_passwords ;;
+   3) toggle_bssid_lock ;;
+   4) config_priority ;;
+   5) wifi_priority ;;
+   0) break ;;
+   *) echo -e "${RED}无效${NC}"; sleep 1 ;;
+   esac
+  done ;;
+ 2)
+  while true; do
+   clear
+   echo -e "${CYAN}========== 热点与救生 ==========${NC}"
+   echo " 1. WiFi 热点 (AP模式)"
+   echo " 2. 热点客户端列表"
+   echo -e " 3. ${GREEN}自动热点救生${NC} (v2.3.1)"
+   echo " 0. 返回主菜单"
+   echo -e "${CYAN}================================${NC}"
+   read -p "选项: " sub
+   case $sub in
+   1) toggle_hotspot ;;
+   2) show_hotspot_clients ;;
+   3) toggle_auto_hotspot ;;
+   0) break ;;
+   *) echo -e "${RED}无效${NC}"; sleep 1 ;;
+   esac
+  done ;;
+ 3)
+  while true; do
+   clear
+   echo -e "${CYAN}======== 防掉线守护 ========${NC}"
+   echo -e " 1. 守护开关 ${GREEN}(watchdog v3.5)${NC}"
+   echo -e " 2. ${GREEN}断网统计面板${NC}"
+   echo -e " 3. ${GREEN}省电模式开关${NC}"
+   echo -e " 4. ${GREEN}定时重连${NC} (v2.3.1)"
+   echo " 0. 返回主菜单"
+   echo -e "${CYAN}============================${NC}"
+   read -p "选项: " sub
+   case $sub in
+   1) toggle_watchdog ;;
+   2) watchdog_stats ;;
+   3) toggle_power_save ;;
+   4) toggle_scheduled_reconnect ;;
+   0) break ;;
+   *) echo -e "${RED}无效${NC}"; sleep 1 ;;
+   esac
+  done ;;
+ 4)
+  while true; do
+   clear
+   echo -e "${CYAN}========== 网络配置 ==========${NC}"
+   echo " 1. 配置静态/动态 IP"
+   echo -e " 2. ${GREEN}IPv6 模式开关${NC} (v2.1.0)"
+   echo " 3. IPv6 详细面板"
+   echo " 4. DNS 测速优化"
+   echo " 0. 返回主菜单"
+   echo -e "${CYAN}==============================${NC}"
+   read -p "选项: " sub
+   case $sub in
+   1) config_ip_mode ;;
+   2) toggle_ipv6 ;;
+   3) ipv6_panel ;;
+   4) dns_optimize ;;
+   0) break ;;
+   *) echo -e "${RED}无效${NC}"; sleep 1 ;;
+   esac
+  done ;;
+ 5)
+  while true; do
+   clear
+   echo -e "${CYAN}======== 诊断与工具 ========${NC}"
+   echo -e " 1. 网络信息与体检 ${GREEN}(含信号强度)${NC}"
+   echo " 2. 网络测速 (国内/国外)"
+   echo " 3. WiFi 信道分析"
+   echo " 4. 配置备份/恢复"
+   echo -e " 5. ${GREEN}一键诊断报告${NC} (v2.3.1)"
+   echo " 0. 返回主菜单"
+   echo -e "${CYAN}============================${NC}"
+   read -p "选项: " sub
+   case $sub in
+   1) show_network_info ;;
+   2) run_speedtest ;;
+   3) channel_analysis ;;
+   4) backup_restore ;;
+   5) diagnostic_report ;;
+   0) break ;;
+   *) echo -e "${RED}无效${NC}"; sleep 1 ;;
+   esac
+  done ;;
+ 6)
+  while true; do
+   clear
+   echo -e "${CYAN}======== 驱动与更新 ========${NC}"
+   echo " 1. 安装 WIFI 驱动 (RTL8188等)"
+   echo -e " 2. ${GREEN}在线更新${NC} (当前 v${VERSION})"
+   echo " 0. 返回主菜单"
+   echo -e "${CYAN}============================${NC}"
+   read -p "选项: " sub
+   case $sub in
+   1) install_driver ;;
+   2) update_script ;;
+   0) break ;;
+   *) echo -e "${RED}无效${NC}"; sleep 1 ;;
+   esac
+  done ;;
  0) clear; echo "已退出。"; exit 0 ;;
  *) echo -e "${RED}无效${NC}"; sleep 1 ;;
  esac
