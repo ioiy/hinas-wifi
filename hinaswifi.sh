@@ -7,9 +7,10 @@
 # v2.0.0: watchdog v3.5 ping-only + 省电模式保持开启(实测稳定) — 解决 RTL8188FU 频繁断线
 # v2.1.0: IPv6 模式开关 — NM ignore 避免路由器 IPv6 不稳定拖垮 DHCPv4
 # v2.2.0: BSSID 锁定/解除 — 双AP同名SSID环境防漫游互踢
+# v2.3.2: BSSID提取修复(cut f2->f2-), scan_wifi_iw tab匹配修复, 非打印字符清理
 # v2.3.1: 自动热点救生 — 无WiFi连接时自动开热点, 热点时定期探测恢复
 
-VERSION="2.3.1"
+VERSION="2.3.2"
 UPDATE_URL="https://ghfast.top/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"
 WATCHDOG_SCRIPT="/usr/local/bin/wifi_watchdog.sh"
 KEEPALIVE_SCRIPT="/usr/local/bin/wifi_keepalive.sh"
@@ -70,7 +71,7 @@ scan_wifi_iw() {
  timeout 15 iw dev "$IF" scan 2>/dev/null | awk '
  /^BSS / {
      if (bssid != "") {
-         gsub(/\\x00/, "", ssid)
+         gsub(/[^[:print:]]/, "", ssid)
          if (ssid != "" && signal != "" && freq != "")
              print bssid ":" ssid ":" signal ":" freq
      }
@@ -78,12 +79,12 @@ scan_wifi_iw() {
      gsub(/\\(.*\\)/, "", bssid)
      ssid=""; signal=""; freq=""
  }
- /\\tSSID:/ { sub(/.*SSID: /, ""); ssid=$0 }
- /\\tsignal:/ { signal=$2 }
- /\\tfreq:/ { freq=$2 }
+ /\tSSID:/ { sub(/.*SSID: /, ""); ssid=$0 }
+ /\tsignal:/ { signal=$2 }
+ /\tfreq:/ { freq=$2 }
  END {
      if (bssid != "") {
-         gsub(/\\x00/, "", ssid)
+         gsub(/[^[:print:]]/, "", ssid)
          if (ssid != "" && signal != "" && freq != "")
              print bssid ":" ssid ":" signal ":" freq
      }
@@ -1401,7 +1402,7 @@ toggle_bssid_lock() {
  read -n 1 -s -r -p "按任意键返回..."; return
  fi
 
- LOCKED_BSSID=$(nmcli -t -f 802-11-wireless.bssid con show "$CONN" 2>/dev/null | cut -d: -f2)
+ LOCKED_BSSID=$(nmcli -t -f 802-11-wireless.bssid con show "$CONN" 2>/dev/null | cut -d: -f2-)
  CUR_BSSID=$(iw dev "$WIFI_IF" link 2>/dev/null | grep -oi "Connected to [0-9a-f:]*" | awk '{print $3}')
  CUR_SSID=$(nmcli -t -f 802-11-wireless.ssid con show "$CONN" 2>/dev/null | cut -d: -f2)
 
@@ -2391,7 +2392,7 @@ while true; do
    _BSSID_LOCK=""
    _ACTIVE_CONN=$(nmcli -t -f NAME,ACTIVE con show 2>/dev/null | grep ':yes' | cut -d: -f1)
    if [ -n "$_ACTIVE_CONN" ]; then
-     _BSSID_VAL=$(nmcli -t -f 802-11-wireless.bssid con show "$_ACTIVE_CONN" 2>/dev/null | cut -d: -f2)
+     _BSSID_VAL=$(nmcli -t -f 802-11-wireless.bssid con show "$_ACTIVE_CONN" 2>/dev/null | cut -d: -f2-)
      [ -n "$_BSSID_VAL" ] && [ "$_BSSID_VAL" != "--" ] && _BSSID_LOCK="${GREEN}"
    fi
    [ -n "$_BSSID_LOCK" ] && echo -e " 3. ${_BSSID_LOCK}BSSID 锁定/解除${NC} 🔒已锁定" || echo " 3. BSSID 锁定/解除"
