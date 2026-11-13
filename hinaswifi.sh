@@ -767,13 +767,55 @@ connect_wifi() {
  WIFI_IF=$(get_wifi_iface)
  CURRENT_SSID=$(nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null | grep '^yes' | cut -d: -f2 | head -1)
  [ -n "$CURRENT_SSID" ] && echo -e "已连接: ${GREEN}$CURRENT_SSID${NC}" || echo -e "${RED}未连接${NC}"
- echo "扫描中..."
- # 多次扫描提高命中率 (RTL8188FU 小芯片一次扫不全同名 SSID)
- timeout 10 nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1; sleep 3
- timeout 10 nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1; sleep 3
- timeout 10 nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1; sleep 2
- timeout 15 nmcli device wifi list ifname "$WIFI_IF"
+echo -e "${YELLOW}扫描中... (请耐心等待 5-10 秒)${NC}"
+ # 修复: 只 rescan 1 次 (多次 rescan 会冲爆 RTL8188FU 芯片)
+ # 修复: 去掉 timeout 15 (太短会杀掉还没扫完的 nmcli, 什么都不显示)
+ nmcli device wifi rescan ifname "$WIFI_IF" >/dev/null 2>&1
+ sleep 3
+
+ # 先用 nmcli 扫, 不加 timeout 让它慢慢扫完
+ NM_SCAN=$(nmcli device wifi list ifname "$WIFI_IF" 2>/dev/null)
+
+ if [ -n "$NM_SCAN" ] && [ "$(echo "$NM_SCAN" | wc -l)" -gt 1 ]; then
+  # nmcli 扫到了, 正常显示
+  echo "$NM_SCAN"
+ else
+  # nmcli 没扫到 (RTL8188FU 连着 WiFi 时经常这样)
+  # 用 iw 底层扫描做 fallback
+  echo -e "${YELLOW}nmcli 扫不到, 尝试 iw 底层扫描...${NC}"
+  IW_SCAN=$(timeout 20 iw dev "$WIFI_IF" scan 2>/dev/null)
+  if [ -n "$IW_SCAN" ]; then
+   # 解析 iw scan 输出, 格式化成类似 nmcli 的表格
+   echo -e "  ${GREEN}BSSID${NC}              ${GREEN}SSID${NC}            ${GREEN}信号${NC}   ${GREEN}信道${NC}"
+   echo "  ------------------  ---------------  ------  ----"
+   echo "$IW_SCAN" | awk '
+   /^BSS / {
+       if (bssid != "" && ssid != "" && signal != "" && freq != "") {
+           ch = int((freq + 0) / 1000 - 2412) / 5 + 1
+           if (freq > 5000) ch = int((freq + 0) / 1000 - 5000) / 5 + 36
+           printf "  %-18s  %-15s  %6s   %3d
+", bssid, ssid, signal, ch
+       }
+       bssid=$2; gsub(/\(.*\)/, "", bssid)
+       ssid=""; signal=""; freq=""
+   }
+   /	SSID:/ { sub(/.*SSID: /, ""); ssid=$0 }
+   /	signal:/ { signal=$2 }
+   /	freq:/ { freq=$2 }
+   END {
+       if (bssid != "" && ssid != "" && signal != "" && freq != "") {
+           ch = int((freq + 0) / 1000 - 2412) / 5 + 1
+           if (freq > 5000) ch = int((freq + 0) / 1000 - 5000) / 5 + 36
+           printf "  %-18s  %-15s  %6s   %3d
+", bssid, ssid, signal, ch
+       }
+   }'
+  else
+   echo -e "${RED}扫描失败, 请直接输入 WiFi 名称${NC}"
+  fi
+ fi
  echo "--------------------------------------"
+ echo -e "${CYAN}提示: 如果列表不全, 可以直接输入 WiFi 名称${NC}"
  read -p "WiFi名称(回车返回): " ssid; [ -z "$ssid" ] && return
  read -s -p "密码(无密码回车): " password; echo
  if [ -z "$password" ]; then
