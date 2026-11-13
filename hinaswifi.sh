@@ -150,11 +150,12 @@ update_script() {
  sleep 3; return
  fi
  # 依次尝试: ghfast代理 → GitHub直连 → ghproxy镜像, 每个最多8秒
+ local GOOD_URL=""
  for U in "$UPDATE_URL" \
    "https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh" \
    "https://ghproxy.com/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"; do
   CLOUD_VERSION=$(timeout 8 wget -qO- --timeout=5 --tries=1 "$U" 2>/dev/null | grep -E "^VERSION=" | head -n 1 | cut -d\" -f2)
-  [ -n "$CLOUD_VERSION" ] && break
+  if [ -n "$CLOUD_VERSION" ]; then GOOD_URL="$U"; break; fi
  done
  if [ -z "$CLOUD_VERSION" ]; then
  echo -e "${RED}❌ 获取云端版本失败。${NC}"
@@ -181,13 +182,21 @@ update_script() {
  fi
  echo -e "${GREEN}正在下载最新代码...${NC}"
  local DL_OK=0
- for U in "$UPDATE_URL" \
-   "https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh" \
-   "https://ghproxy.com/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"; do
-  if timeout 30 wget -q --timeout=10 --tries=1 -O /tmp/hinaswifi.sh.tmp "$U" 2>/dev/null; then
-   DL_OK=1; break
-  fi
- done
+ # 优先用版本检测成功的URL, 15秒超时
+ if [ -n "$GOOD_URL" ]; then
+  timeout 15 wget -q --timeout=10 --tries=1 -O /tmp/hinaswifi.sh.tmp "$GOOD_URL" 2>/dev/null && DL_OK=1
+ fi
+ # 失败了再试其他URL, 每个10秒
+ if [ "$DL_OK" = "0" ]; then
+  for U in "$UPDATE_URL" \
+    "https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh" \
+    "https://ghproxy.com/https://raw.githubusercontent.com/ioiy/hinas-wifi/main/hinaswifi.sh"; do
+   [ "$U" = "$GOOD_URL" ] && continue
+   if timeout 10 wget -q --timeout=5 --tries=1 -O /tmp/hinaswifi.sh.tmp "$U" 2>/dev/null; then
+    DL_OK=1; break
+   fi
+  done
+ fi
  if [ "$DL_OK" = "1" ]; then
  if ! grep -q "^VERSION=" /tmp/hinaswifi.sh.tmp; then
  echo -e "${RED}❌ 下载的文件不合法(缺少VERSION行)，已放弃更新。${NC}"
